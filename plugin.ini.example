@@ -1,6 +1,6 @@
 [plugin]
 active = false
-
-[instance-name]
+auth_username = user
+auth_password = pass
 server_host = 127.0.0.1
 server_port = 9008
