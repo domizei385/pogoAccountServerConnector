@@ -93,6 +93,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         # plugin specific
         self.server_host = self._pluginconfig.get(statusname, "server_host", fallback="127.0.0.1")
         self.server_port = self._pluginconfig.getint(statusname, "server_port", fallback=9008)
+        self.region = self._pluginconfig.get(statusname, "region", fallback="")
         global_auth_username = self._pluginconfig.get("plugin", "auth_username", fallback=None)
         global_auth_password = self._pluginconfig.get("plugin", "auth_password", fallback=None)
         self.auth_username = self._pluginconfig.get(statusname, "auth_username", fallback=global_auth_username)
@@ -126,11 +127,11 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
     async def request_account(self, origin):
         level_mode = await self.mm.routemanager_of_origin_is_levelmode(origin)
-        leveling = "/leveling" if level_mode else ""
-        url = f"http://{self.server_host}:{self.server_port}/get/{origin}" + leveling
+        url = f"http://{self.server_host}:{self.server_port}/get/{origin}"
         self.logger.info(f"Try to get account from: {url}")
         try:
-            async with self.session.get(url) as r:
+            params = {'region': self.region, 'leveling': 1 if level_mode else 0}
+            async with self.session.get(url, params=params) as r:
                 content = await r.content.read()
                 content = content.decode()
                 if r.ok:
