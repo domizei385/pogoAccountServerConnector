@@ -39,6 +39,16 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.strategy_factory.get_strategy = new_get_strategy
         self.logger.success("patched get_strategy / get_next_account!")
 
+    async def patch_set_level(self):
+        self.logger.info("try to patch set_level")
+        old_set_level = self.mitm_mapper.set_level
+        async def new_set_level(worker: str, level: int) -> None:
+            set_level = await old_set_level(worker, level)
+            await self.track_level(worker, level)
+            return set_level
+        self.mitm_mapper.set_level = new_set_level
+        self.logger.success("patched set_level!")
+
     def __init__(self, subapp_to_register_to: web.Application, mad_parts: Dict):
         super().__init__(subapp_to_register_to, mad_parts)
 
@@ -46,6 +56,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self._mad = self._mad_parts
         self.logger = self._mad['logger']
         self.mm = self._mad['mapping_manager']
+        self.mitm_mapper = self._mad['mitm_mapper']
         self.strategy_factory = self._mad['ws_server']._WebsocketServer__strategy_factory
 
         statusname = self._mad["args"].status_name
@@ -97,10 +108,13 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         if not self._pluginconfig.getboolean("plugin", "active", fallback=False):
             return False
         await self.patch_get_strategy()
+        await self.patch_set_level()
         return True
 
     async def request_account(self, origin):
-        url = f"http://{self.server_host}:{self.server_port}/get/{origin}"
+        level_mode = await self.mm.routemanager_of_origin_is_levelmode(origin)
+        leveling = "/leveling" if level_mode else ""
+        url = f"http://{self.server_host}:{self.server_port}/get/{origin}" + leveling
         self.logger.info(f"Try to get account from: {url}")
         try:
             async with self.session.get(url) as r:
@@ -117,4 +131,21 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     return False
         except Exception as e:
             self.logger.exception(f"Exception trying to request account from account server: {e}")
+            return False
+
+    async def track_level(self, origin: str, level: int):
+        url = f"http://{self.server_host}:{self.server_port}/set/{origin}/level/{level}"
+        self.logger.info(f"Setting level {level} for origin {origin}")
+        try:
+            async with self.session.post(url) as r:
+                content = await r.content.read()
+                content = content.decode()
+                if r.ok:
+                    self.logger.info(f"Request ok, response: {content}")
+                    return True
+                else:
+                    self.logger.warning(f"Request NOT ok, response: {content}")
+                    return False
+        except Exception as e:
+            self.logger.exception(f"Exception trying to set level in account server: {e}")
             return False
