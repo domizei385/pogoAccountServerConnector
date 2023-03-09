@@ -26,6 +26,19 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             async def new_get_next_account(origin=worker_state.origin):
                 return await self.request_account(origin)
             strategy = await old_get_strategy(worker_type, area_id, communicator, walker_settings, worker_state)
+
+            # intercept switch_user for switch reason
+            old_switch_user = strategy._switch_user
+            async def new_switch_user(reason=None):
+                if reason == 'maintenance':
+                    return await self.burn_account(strategy._worker_state.origin)
+                await old_switch_user(reason)
+            if strategy._switch_user != new_switch_user:
+                self.logger.info("patch _switch_user")
+                strategy._switch_user = new_switch_user
+            else:
+                self.logger.warning("already patched switch_user")
+
             logintype = await self.mm.get_devicesetting_value_of_device(worker_state.origin,
                                                                         MappingManagerDevicemappingKey.LOGINTYPE)
             if logintype == "ptc" and strategy._word_to_screen_matching.get_next_account != new_get_next_account:
@@ -148,4 +161,21 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     return False
         except Exception as e:
             self.logger.exception(f"Exception trying to set level in account server: {e}")
+            return False
+
+    async def burn_account(self, origin: str):
+        url = f"http://{self.server_host}:{self.server_port}/set/{origin}/burned"
+        self.logger.info(f"Burning account of origin {origin}")
+        try:
+            async with self.session.post(url) as r:
+                content = await r.content.read()
+                content = content.decode()
+                if r.ok:
+                    self.logger.info(f"Request ok, response: {content}")
+                    return True
+                else:
+                    self.logger.warning(f"Request NOT ok, response: {content}")
+                    return False
+        except Exception as e:
+            self.logger.exception(f"Exception trying to burn account in account server: {e}")
             return False
