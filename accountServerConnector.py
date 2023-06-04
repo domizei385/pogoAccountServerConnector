@@ -1,22 +1,20 @@
 import asyncio
-import os
 import json
-from typing import Dict, List
-from aiohttp import web
+import os
+from typing import Dict
+
 import aiohttp
-from typing import Dict, List, Optional, Tuple
-from mapadroid.db.model import TrsStatsDetectWildMonRaw
-
-from sqlalchemy import and_, case, func
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-
 import mapadroid.plugins.pluginBase
-from plugins.accountServerConnector.endpoints import register_custom_plugin_endpoints
-from mapadroid.utils.collections import Login_PTC
+from aiohttp import web
+from mapadroid.db.model import TrsStatsDetectWildMonRaw
 from mapadroid.mapping_manager.MappingManagerDevicemappingKey import \
     MappingManagerDevicemappingKey
+from mapadroid.utils.collections import Login_PTC
+from plugins.accountServerConnector.endpoints import register_custom_plugin_endpoints
+from sqlalchemy import and_, delete
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 
 class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
@@ -50,8 +48,10 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     reasons[origin] = reason
                 # TODO: log user out in backend for better timeout handling
                 self.logger.info(f"_switch_user(origin={origin}, reason={reason})")
-                if reason == 'maintenance' or reason == 'limit':
+                if reason == 'maintenance':
                     await self.burn_account(origin)
+                elif reason == 'limit':
+                    await self.burn_account(origin, 5000)
                 await old_switch_user(reason)
 
             if logintype == "ptc" and strategy._switch_user != new_switch_user:
@@ -165,7 +165,9 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                         if count > self.__encounter_limit:
                             if worker in self.__worker_strategy:
                                 self.logger.warning(f"Switching worker {worker} as #encounters has reached {count} (> {self.__encounter_limit})")
-                                self.__worker_strategy[worker]._switch_user('limit')
+                                success = await self.__worker_strategy[worker]._switch_user('limit')
+                                if success:
+                                    await self._delete_worker_stats(session, worker)
                             else:
                                 self.logger.warning(f"Unable to switch user on worker {worker} as strategy instance is missing")
                 except Exception:
@@ -173,8 +175,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
             await asyncio.sleep(self.__worker_encounter_check_interval_sec)
 
-    @staticmethod
-    async def count_by_worker(session: AsyncSession) -> dict[str, int]:
+    async def count_by_worker(self, session: AsyncSession) -> dict[str, int]:
         stmt = select(
             TrsStatsDetectWildMonRaw.worker,
             func.count("*")) \
@@ -185,6 +186,12 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         for worker, count in result.all():
             worker_count[worker] = count
         return worker_count
+
+    async def _delete_worker_stats(self, session: AsyncSession, worker: str) -> None:
+        self.logger.info(f"Deleting worker stats for {worker}")
+        stmt = delete(TrsStatsDetectWildMonRaw) \
+            .where(TrsStatsDetectWildMonRaw.worker == worker)
+        await session.execute(stmt)
 
     async def request_account(self, origin, reason=None):
         level_mode = await self.mm.routemanager_of_origin_is_levelmode(origin)
@@ -227,11 +234,14 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             self.logger.exception(f"Exception trying to set level in account server: {e}")
             return False
 
-    async def burn_account(self, origin: str):
+    async def burn_account(self, origin: str, encounters: int=None):
+        data = {}
+        if encounters:
+            data = {'encounters': str(encounters)}
         url = f"http://{self.server_host}:{self.server_port}/set/{origin}/burned"
         self.logger.info(f"Burning account of origin {origin}")
         try:
-            async with self.session.post(url) as r:
+            async with self.session.post(url, json=data) as r:
                 # TODO: drop stats data for origin, track in history table
 
                 content = await r.content.read()
