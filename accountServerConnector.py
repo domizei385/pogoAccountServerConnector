@@ -118,7 +118,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.auth_username = self._pluginconfig.get(statusname, "auth_username", fallback=global_auth_username)
         self.auth_password = self._pluginconfig.get(statusname, "auth_password", fallback=global_auth_password)
 
-        self.__worker_encounter_check_interval_sec = self._pluginconfig.getint(statusname, "encounter_check_interval", fallback=30 * 60)
+        self.__worker_encounter_check_interval_sec = self._pluginconfig.getint(statusname, "encounter_check_interval"
+                                                                                           "", fallback=30 * 60)
 
         if self.auth_username and self.auth_password:
             auth = aiohttp.BasicAuth(self.auth_username, self.auth_password)
@@ -156,7 +157,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
             async with self.__db_wrapper as session, session:
                 try:
-                    counters = await self.count_by_origin(session)
+                    counters = await self.count_by_worker(session)
                     self.logger.info(str(counters))
                 except Exception:
                     self.logger.opt(exception=True).error("Unhandled exception in pogoAccountServerConnector! Trying to continue... ")
@@ -164,17 +165,17 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             await asyncio.sleep(self.__worker_encounter_check_interval_sec)
 
     @staticmethod
-    async def count_by_origin(session: AsyncSession) -> dict[str, int]:
+    async def count_by_worker(session: AsyncSession) -> dict[str, int]:
         stmt = select(
-            TrsStatsDetectWildMonRaw.origin,
+            TrsStatsDetectWildMonRaw.worker,
             func.count("*")) \
             .select_from(TrsStatsDetectWildMonRaw) \
-            .group_by(TrsStatsDetectWildMonRaw.origin)
+            .group_by(TrsStatsDetectWildMonRaw.worker)
         result = await session.execute(stmt)
-        origin_count: Dict[str, int] = {}
-        for origin, count in result.all():
-            origin_count[origin] = count
-        return origin_count
+        worker_count: Dict[str, int] = {}
+        for worker, count in result.all():
+            worker_count[worker] = count
+        return worker_count
 
     async def request_account(self, origin, reason=None):
         level_mode = await self.mm.routemanager_of_origin_is_levelmode(origin)
