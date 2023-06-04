@@ -161,7 +161,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 try:
                     counters = await self.count_by_worker(session)
                     self.logger.info(str(counters))
-                    for worker, count in counters:
+                    for worker, count in counters.items():
                         if count > self.__encounter_limit:
                             if worker in self.__worker_strategy:
                                 self.logger.warning(f"Switching worker {worker} as #encounters has reached {count} (> {self.__encounter_limit})")
