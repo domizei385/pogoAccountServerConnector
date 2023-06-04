@@ -122,6 +122,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.__worker_strategy = dict()
         self.__worker_encounter_check_interval_sec = self._pluginconfig.getint(statusname, "encounter_check_interval", fallback=30 * 60)
         self.__encounter_limit = self._pluginconfig.getint(statusname, "encounter_limit", fallback=5000)
+        self.__excluded_workers = ['ing21x64','ing20x64','ing18x64','ing16x64']
 
         if self.auth_username and self.auth_password:
             auth = aiohttp.BasicAuth(self.auth_username, self.auth_password)
@@ -164,10 +165,11 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     for worker, count in counters.items():
                         if count > self.__encounter_limit:
                             if worker in self.__worker_strategy:
-                                self.logger.warning(f"Switching worker {worker} as #encounters has reached {count} (> {self.__encounter_limit})")
-                                success = await self.__worker_strategy[worker]._switch_user('limit')
-                                if success:
-                                    await self._delete_worker_stats(session, worker)
+                                if not worker in self.__excluded_workers:
+                                    self.logger.warning(f"Switching worker {worker} as #encounters has reached {count} (> {self.__encounter_limit})")
+                                    success = await self.__worker_strategy[worker]._switch_user('limit')
+                                    if success:
+                                        await self._delete_worker_stats(session, worker)
                             else:
                                 self.logger.warning(f"Unable to switch user on worker {worker} as strategy instance is missing")
                 except Exception:
