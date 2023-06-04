@@ -1,14 +1,22 @@
+import asyncio
 import os
 import json
-from typing import Dict
+from typing import Dict, List
 from aiohttp import web
 import aiohttp
+from typing import Dict, List, Optional, Tuple
+from mapadroid.db.model import TrsStatsDetectWildMonRaw
+
+from sqlalchemy import and_, case, func
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 import mapadroid.plugins.pluginBase
 from plugins.accountServerConnector.endpoints import register_custom_plugin_endpoints
 from mapadroid.utils.collections import Login_PTC
 from mapadroid.mapping_manager.MappingManagerDevicemappingKey import \
     MappingManagerDevicemappingKey
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
@@ -81,6 +89,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.mm = self._mad['mapping_manager']
         self.mitm_mapper = self._mad['mitm_mapper']
         self.strategy_factory = self._mad['ws_server']._WebsocketServer__strategy_factory
+        self.__db_wrapper = self._mad["db_wrapper"]
 
         statusname = self._mad["args"].status_name
         self.logger.info("Got statusname: {}", statusname)
@@ -109,6 +118,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.auth_username = self._pluginconfig.get(statusname, "auth_username", fallback=global_auth_username)
         self.auth_password = self._pluginconfig.get(statusname, "auth_password", fallback=global_auth_password)
 
+        self.__worker_encounter_check_interval_sec = self._pluginconfig.getint(statusname, "encounter_check_interval", fallback=30 * 60)
+
         if self.auth_username and self.auth_password:
             auth = aiohttp.BasicAuth(self.auth_username, self.auth_password)
         else:
@@ -133,7 +144,37 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             return False
         await self.patch_get_strategy()
         await self.patch_set_level()
+
+        loop = asyncio.get_running_loop()
+        self.__worker_encounter_limit_check = loop.create_task(self._check_encounters())
+
         return True
+
+    async def _check_encounters(self):
+        while True:
+            self.logger.info("Getting # encounters")
+
+            async with self.__db_wrapper as session, session:
+                try:
+                    counters = await self.count_by_origin(session)
+                    self.logger.info(str(counters))
+                except Exception:
+                    self.logger.opt(exception=True).error("Unhandled exception in pogoAccountServerConnector! Trying to continue... ")
+
+            await asyncio.sleep(self.__worker_encounter_check_interval_sec)
+
+    @staticmethod
+    async def count_by_origin(session: AsyncSession) -> dict[str, int]:
+        stmt = select(
+            TrsStatsDetectWildMonRaw.origin,
+            func.count("*")) \
+            .select_from(TrsStatsDetectWildMonRaw) \
+            .group_by(TrsStatsDetectWildMonRaw.origin)
+        result = await session.execute(stmt)
+        origin_count: Dict[str, int] = {}
+        for origin, count in result.all():
+            origin_count[origin] = count
+        return origin_count
 
     async def request_account(self, origin, reason=None):
         level_mode = await self.mm.routemanager_of_origin_is_levelmode(origin)
@@ -181,6 +222,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.logger.info(f"Burning account of origin {origin}")
         try:
             async with self.session.post(url) as r:
+                # TODO: drop stats data for origin, track in history table
+
                 content = await r.content.read()
                 content = content.decode()
                 if r.ok:
