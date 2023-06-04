@@ -42,6 +42,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                                                                         MappingManagerDevicemappingKey.LOGINTYPE)
 
             # intercept switch_user for switch reason
+            self.__worker_strategy[worker_state.origin] = strategy
             old_switch_user = strategy._switch_user
             async def new_switch_user(reason=None):
                 origin = worker_state.origin
@@ -49,7 +50,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     reasons[origin] = reason
                 # TODO: log user out in backend for better timeout handling
                 self.logger.info(f"_switch_user(origin={origin}, reason={reason})")
-                if reason == 'maintenance':
+                if reason == 'maintenance' or reason == 'limit':
                     await self.burn_account(origin)
                 await old_switch_user(reason)
 
@@ -118,8 +119,9 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.auth_username = self._pluginconfig.get(statusname, "auth_username", fallback=global_auth_username)
         self.auth_password = self._pluginconfig.get(statusname, "auth_password", fallback=global_auth_password)
 
-        self.__worker_encounter_check_interval_sec = self._pluginconfig.getint(statusname, "encounter_check_interval"
-                                                                                           "", fallback=30 * 60)
+        self.__worker_strategy = dict()
+        self.__worker_encounter_check_interval_sec = self._pluginconfig.getint(statusname, "encounter_check_interval", fallback=30 * 60)
+        self.__encounter_limit = self._pluginconfig.getint(statusname, "encounter_limit", fallback=5000)
 
         if self.auth_username and self.auth_password:
             auth = aiohttp.BasicAuth(self.auth_username, self.auth_password)
@@ -159,6 +161,13 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 try:
                     counters = await self.count_by_worker(session)
                     self.logger.info(str(counters))
+                    for worker, count in counters:
+                        if count > self.__encounter_limit:
+                            if worker in self.__worker_strategy:
+                                self.logger.warning(f"Switching worker {worker} as #encounters has reached {count} (> {self.__encounter_limit})")
+                                self.__worker_strategy[worker]._switch_user('limit')
+                            else:
+                                self.logger.warning(f"Unable to switch user on worker {worker} as strategy instance is missing")
                 except Exception:
                     self.logger.opt(exception=True).error("Unhandled exception in pogoAccountServerConnector! Trying to continue... ")
 
