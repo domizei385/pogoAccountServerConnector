@@ -194,23 +194,24 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     counters = await self.count_by_worker(session)
                     self.logger.info(str(counters))
                     for worker, count in counters.items():
-                        if count > self.__encounter_limit:
-                            if worker in self.__worker_strategy:
-                                if not worker in self.__excluded_workers:
-                                    self.logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__encounter_limit})")
-                                    try:
-                                        await self.__worker_strategy[worker]._switch_user('limit')
-                                    except Exception:
-                                        self.logger.opt(exception=True).error("Exception while switching user")
-                                    try:
-                                        self.logger.info(f"Deleting worker stats for {worker}")
-                                        await self._delete_worker_stats(session, worker)
-                                    except Exception as e:
-                                        self.logger.opt(exception=True).error("Exception while deleting worker stats")
-                                else:
-                                    self.logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
+                        if count < self.__encounter_limit:
+                            continue
+                        if worker in self.__worker_strategy:
+                            if not worker in self.__excluded_workers:
+                                self.logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__encounter_limit})")
+                                try:
+                                    await self.__worker_strategy[worker]._switch_user('limit')
+                                except Exception:
+                                    self.logger.opt(exception=True).error("Exception while switching user")
+                                try:
+                                    self.logger.info(f"Deleting worker stats for {worker}")
+                                    await self._delete_worker_stats(session, worker)
+                                except Exception as e:
+                                    self.logger.opt(exception=True).error("Exception while deleting worker stats")
                             else:
-                                self.logger.warning(f"Unable to switch user on worker {worker} as strategy instance is missing")
+                                self.logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
+                        else:
+                            self.logger.warning(f"Unable to switch user on worker {worker} as strategy instance is missing")
                 except Exception:
                     self.logger.opt(exception=True).error("Unhandled exception in pogoAccountServerConnector! Trying to continue... ")
 
@@ -235,6 +236,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         stmt = delete(TrsStatsDetectWildMonRaw) \
             .where(TrsStatsDetectWildMonRaw.worker == worker)
         await session.execute(stmt)
+        print("Deleted stats for " + worker)
+        await session.commit()
 
     async def available_accounts(self, origin):
         url = f"http://{self.server_host}:{self.server_port}/stats"
