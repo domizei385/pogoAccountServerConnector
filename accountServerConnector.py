@@ -71,11 +71,13 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 else:
                     self.logger.warning(f"already patched for {worker_state.origin}")
 
+                old_track_ptc_login = strategy._word_to_screen_matching.track_ptc_login
+
                 async def new_track_ptc_login():
                     # Suppress login attempt when no account is available
                     count = await self.available_accounts(worker_state.origin)
-                    self.logger.info(f"Accounts available for {worker_state.origin}: {str(count)}")
-                    return count > 0
+                    self.logger.info(f"Accounts available for {worker_state.origin}: {str(count)}. Allowing PTC login")
+                    return count > 0 and await old_track_ptc_login()
                 if strategy._word_to_screen_matching.track_ptc_login != new_track_ptc_login:
                     self.logger.debug("patch track_ptc_login")
                     strategy._word_to_screen_matching.track_ptc_login = new_track_ptc_login
@@ -224,7 +226,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 content = content.decode()
                 if r.ok:
                     payload = json.loads(content)
-                    self.logger.info(f"Request ok, response: {payload}")
+                    self.logger.debug(f"Request ok, response: {payload}")
                     available = payload[self.region]['available']
                     if await self.mm.routemanager_of_origin_is_levelmode(origin):
                         return int(available['unleveled'])
@@ -250,11 +252,14 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 content = content.decode()
                 if r.status == 200:
                     self.logger.debug(f"Request ok, response: {content}")
-                    
+
                     j = json.loads(content)
                     username = j["data"]["username"]
                     password = j["data"]["password"]
                     return Login_PTC(username, password)
+                elif r.status == 204:
+                    self.logger.debug("No account available")
+                    return None
                 else:
                     self.logger.warning(f"Request NOT ok, response: {content}")
                     return None
