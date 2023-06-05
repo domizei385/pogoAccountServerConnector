@@ -193,11 +193,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                             if worker in self.__worker_strategy:
                                 if not worker in self.__excluded_workers:
                                     self.logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__encounter_limit})")
-                                    success = await self.__worker_strategy[worker]._switch_user('limit')
-                                    if success:
-                                        await self._delete_worker_stats(session, worker)
-                                    else:
-                                        self.logger.warning(f"Failed to call _switch_user for worker {worker} with strategy {type(self.__worker_strategy[worker]).__name__}")
+                                    asyncio.run(self.__worker_strategy[worker]._switch_user('limit'))
+                                    asyncio.run(self._delete_worker_stats(session, worker))
                                 else:
                                     self.logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
                             else:
@@ -303,7 +300,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.logger.info(f"Burning account of origin {origin} with data {str(data)}")
         try:
             async with self.session.post(url, json=data) as r:
-                # TODO: drop stats data for origin, track in history table
+                # TODO: drop stats data for origin
 
                 content = await r.content.read()
                 content = content.decode()
