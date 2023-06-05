@@ -82,8 +82,9 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 async def new_track_ptc_login():
                     # Suppress login attempt when no account is available
                     count = await self.available_accounts(worker_state.origin)
-                    self.logger.info(f"Accounts available for {worker_state.origin}: {str(count)}. Allowing PTC login")
-                    return count > 0 and await old_track_ptc_login()
+                    allow_login = count > 0 and await old_track_ptc_login()
+                    self.logger.info(f"Accounts available for {worker_state.origin}: {str(count)}. {'Allowing' if allow_login else 'Preventing'} PTC login.")
+                    return allow_login
                 if strategy._word_to_screen_matching.track_ptc_login != new_track_ptc_login:
                     self.logger.debug("patch track_ptc_login")
                     strategy._word_to_screen_matching.track_ptc_login = new_track_ptc_login
