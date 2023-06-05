@@ -175,7 +175,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
     async def _check_encounters(self):
         while True:
-            self.logger.info("Getting # encounters")
+            self.logger.debug("Getting # encounters")
 
             async with self.__db_wrapper as session, session:
                 try:
