@@ -50,7 +50,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 if reason:
                     reasons[origin] = reason
                 # TODO: log user out in backend for better timeout handling
-                self.logger.info(f"_switch_user(origin={origin}, reason={reason})")
+                self.logger.debug(f"_switch_user(origin={origin}, reason={reason})")
                 encounters = 0
                 async with self.__db_wrapper as session, session:
                     try:
@@ -300,7 +300,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         if encounters:
             data['encounters'] = encounters
         url = f"http://{self.server_host}:{self.server_port}/set/{origin}/burned"
-        self.logger.info(f"Burning account of origin {origin}")
+        self.logger.info(f"Burning account of origin {origin} with data {str(data)}")
         try:
             async with self.session.post(url, json=data) as r:
                 # TODO: drop stats data for origin, track in history table
