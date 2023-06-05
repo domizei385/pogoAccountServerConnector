@@ -64,11 +64,21 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             elif strategy._switch_user == new_switch_user:
                 self.logger.warning("already patched switch_user")
 
-            if logintype == "ptc" and strategy._word_to_screen_matching.get_next_account != new_get_next_account:
-                self.logger.debug(f"patch get_next_account for {worker_state.origin} using PTC accounts")
-                strategy._word_to_screen_matching.get_next_account = new_get_next_account
-            elif strategy._word_to_screen_matching.get_next_account == new_get_next_account:
-                self.logger.warning(f"already patched for {worker_state.origin}")
+            if logintype == "ptc":
+                if strategy._word_to_screen_matching.get_next_account != new_get_next_account:
+                    self.logger.debug(f"patch get_next_account for {worker_state.origin} using PTC accounts")
+                    strategy._word_to_screen_matching.get_next_account = new_get_next_account
+                else:
+                    self.logger.warning(f"already patched for {worker_state.origin}")
+
+                async def new_track_ptc_login():
+                    # Suppress login attempt when no account is available
+                    count = await self.available_accounts()
+                    self.logger.info(f"Accounts available for {worker_state.origin}: {str(count)}")
+                    return count > 0
+                if strategy._word_to_screen_matching.track_ptc_login != new_track_ptc_login:
+                    self.logger.debug("patch track_ptc_login")
+                    strategy._word_to_screen_matching.track_ptc_login = new_track_ptc_login
             else:
                 self.logger.info(f"not patching for {worker_state.origin} - logintype is {logintype}")
             return strategy
@@ -206,6 +216,24 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             .where(TrsStatsDetectWildMonRaw.worker == worker)
         await session.execute(stmt)
 
+    async def available_accounts(self):
+        url = f"http://{self.server_host}:{self.server_port}/stats"
+        try:
+            async with self.session.get(url) as r:
+                content = await r.content.read()
+                content = content.decode()
+                if r.ok:
+                    j = json.loads(content)
+                    self.logger.info(f"Request ok, response: {j}")
+                    count = int(j[self.region]['available']) + int(j['shared']['available'])
+                    return count
+                else:
+                    self.logger.warning(f"Request NOT ok, response: {content}")
+                    return None
+        except Exception as e:
+            self.logger.exception(f"Exception trying to request account from account server: {e}")
+            return None
+
     async def request_account(self, origin, reason=None):
         level_mode = await self.mm.routemanager_of_origin_is_levelmode(origin)
         url = f"http://{self.server_host}:{self.server_port}/get/{origin}"
@@ -225,10 +253,10 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     return Login_PTC(username, password)
                 else:
                     self.logger.warning(f"Request NOT ok, response: {content}")
-                    return False
+                    return None
         except Exception as e:
             self.logger.exception(f"Exception trying to request account from account server: {e}")
-            return False
+            return None
 
     async def track_level(self, origin: str, level: int):
         url = f"http://{self.server_host}:{self.server_port}/set/{origin}/level/{level}"
