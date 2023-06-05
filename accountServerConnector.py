@@ -27,21 +27,24 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
     async def patch_get_strategy(self):
         self.logger.info("try to patch get_strategy")
         old_get_strategy = self.strategy_factory.get_strategy
+
         async def new_get_strategy(worker_type, area_id, communicator, walker_settings, worker_state):
             reasons = {}
+
             async def new_get_next_account(origin=worker_state.origin):
                 reason = None
                 if origin in reasons:
                     reason = reasons.pop(origin)
                 return await self.request_account(origin, reason)
+
             strategy = await old_get_strategy(worker_type, area_id, communicator, walker_settings, worker_state)
 
             logintype = await self.mm.get_devicesetting_value_of_device(worker_state.origin,
                                                                         MappingManagerDevicemappingKey.LOGINTYPE)
 
             # intercept switch_user for switch reason
-            self.__worker_strategy[worker_state.origin] = strategy
             old_switch_user = strategy._switch_user
+
             async def new_switch_user(reason=None):
                 origin = worker_state.origin
                 if reason:
@@ -49,35 +52,39 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 # TODO: log user out in backend for better timeout handling
                 self.logger.info(f"_switch_user(origin={origin}, reason={reason})")
                 if reason == 'maintenance':
-                    await self.burn_account(origin)
+                    await self.burn_account(origin, reason=reason)
                 elif reason == 'limit':
-                    await self.burn_account(origin, 5000)
+                    await self.burn_account(origin, reason=reason, encounters=5000)
                 await old_switch_user(reason)
 
             if logintype == "ptc" and strategy._switch_user != new_switch_user:
-                self.logger.info("patch _switch_user")
+                self.logger.debug("patch _switch_user")
                 strategy._switch_user = new_switch_user
+                self.__worker_strategy[worker_state.origin] = strategy
             elif strategy._switch_user == new_switch_user:
                 self.logger.warning("already patched switch_user")
 
             if logintype == "ptc" and strategy._word_to_screen_matching.get_next_account != new_get_next_account:
-                self.logger.info(f"patch get_next_account for {worker_state.origin} using PTC accounts")
+                self.logger.debug(f"patch get_next_account for {worker_state.origin} using PTC accounts")
                 strategy._word_to_screen_matching.get_next_account = new_get_next_account
             elif strategy._word_to_screen_matching.get_next_account == new_get_next_account:
                 self.logger.warning(f"already patched for {worker_state.origin}")
             else:
                 self.logger.info(f"not patching for {worker_state.origin} - logintype is {logintype}")
             return strategy
+
         self.strategy_factory.get_strategy = new_get_strategy
         self.logger.success("patched get_strategy / get_next_account!")
 
     async def patch_set_level(self):
         self.logger.info("try to patch set_level")
         old_set_level = self.mitm_mapper.set_level
+
         async def new_set_level(worker: str, level: int) -> None:
             set_level = await old_set_level(worker, level)
             await self.track_level(worker, level)
             return set_level
+
         self.mitm_mapper.set_level = new_set_level
         self.logger.success("patched set_level!")
 
@@ -122,7 +129,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.__worker_strategy = dict()
         self.__worker_encounter_check_interval_sec = self._pluginconfig.getint(statusname, "encounter_check_interval", fallback=30 * 60)
         self.__encounter_limit = self._pluginconfig.getint(statusname, "encounter_limit", fallback=5000)
-        self.__excluded_workers = ['ing21x64','ing20x64','ing18x64','ing16x64']
+        self.__excluded_workers = ['ing21x64', 'ing20x64', 'ing18x64', 'ing16x64']
 
         if self.auth_username and self.auth_password:
             auth = aiohttp.BasicAuth(self.auth_username, self.auth_password)
@@ -140,8 +147,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
             for name, link, description in self._hotlink:
                 self._mad_parts['madmin'].add_plugin_hotlink(name, link.replace("/", ""),
-                                                       self.pluginname, self.description, self.author, self.url,
-                                                       description, self.version)
+                                                             self.pluginname, self.description, self.author, self.url,
+                                                             description, self.version)
 
     async def _perform_operation(self):
         if not self._pluginconfig.getboolean("plugin", "active", fallback=False):
@@ -166,10 +173,14 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                         if count > self.__encounter_limit:
                             if worker in self.__worker_strategy:
                                 if not worker in self.__excluded_workers:
-                                    self.logger.warning(f"Switching worker {worker} as #encounters has reached {count} (> {self.__encounter_limit})")
+                                    self.logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__encounter_limit})")
                                     success = await self.__worker_strategy[worker]._switch_user('limit')
                                     if success:
                                         await self._delete_worker_stats(session, worker)
+                                    else:
+                                        self.logger.warning(f"Failed to call _switch_user for worker {worker} with strategy {type(self.__worker_strategy[worker]).__name__}")
+                                else:
+                                    self.logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
                             else:
                                 self.logger.warning(f"Unable to switch user on worker {worker} as strategy instance is missing")
                 except Exception:
@@ -236,10 +247,12 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             self.logger.exception(f"Exception trying to set level in account server: {e}")
             return False
 
-    async def burn_account(self, origin: str, encounters: int=None):
+    async def burn_account(self, origin: str, reason: str = None, encounters: int = None):
         data = {}
+        if reason:
+            data['reason'] = reason
         if encounters:
-            data = {'encounters': str(encounters)}
+            data['encounters'] = encounters
         url = f"http://{self.server_host}:{self.server_port}/set/{origin}/burned"
         self.logger.info(f"Burning account of origin {origin}")
         try:
