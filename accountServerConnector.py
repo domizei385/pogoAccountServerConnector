@@ -200,12 +200,13 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                                     self.logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__encounter_limit})")
                                     try:
                                         await self.__worker_strategy[worker]._switch_user('limit')
-                                    except:
-                                        pass
+                                    except Exception:
+                                        self.logger.opt(exception=True).error("Exception while switching user")
                                     try:
+                                        self.logger.info(f"Deleting worker stats for {worker}")
                                         await self._delete_worker_stats(session, worker)
-                                    except:
-                                        pass
+                                    except Exception as e:
+                                        self.logger.opt(exception=True).error("Exception while deleting worker stats")
                                 else:
                                     self.logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
                             else:
@@ -229,8 +230,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             worker_count[db_worker] = count
         return worker_count
 
-    async def _delete_worker_stats(self, session: AsyncSession, worker: str) -> None:
-        self.logger.info(f"Deleting worker stats for {worker}")
+    @staticmethod
+    async def _delete_worker_stats(session: AsyncSession, worker: str) -> None:
         stmt = delete(TrsStatsDetectWildMonRaw) \
             .where(TrsStatsDetectWildMonRaw.worker == worker)
         await session.execute(stmt)
