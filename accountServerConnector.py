@@ -73,7 +73,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
                 async def new_track_ptc_login():
                     # Suppress login attempt when no account is available
-                    count = await self.available_accounts()
+                    count = await self.available_accounts(worker_state.origin)
                     self.logger.info(f"Accounts available for {worker_state.origin}: {str(count)}")
                     return count > 0
                 if strategy._word_to_screen_matching.track_ptc_login != new_track_ptc_login:
@@ -216,17 +216,20 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             .where(TrsStatsDetectWildMonRaw.worker == worker)
         await session.execute(stmt)
 
-    async def available_accounts(self):
+    async def available_accounts(self, origin):
         url = f"http://{self.server_host}:{self.server_port}/stats"
         try:
             async with self.session.get(url) as r:
                 content = await r.content.read()
                 content = content.decode()
                 if r.ok:
-                    j = json.loads(content)
-                    self.logger.info(f"Request ok, response: {j}")
-                    count = int(j[self.region]['available']) + int(j['shared']['available'])
-                    return count
+                    payload = json.loads(content)
+                    self.logger.info(f"Request ok, response: {payload}")
+                    available = payload[self.region]['available']
+                    if await self.mm.routemanager_of_origin_is_levelmode(origin):
+                        return int(available['unleveled'])
+                    else:
+                        return int(available['leveled'])
                 else:
                     self.logger.warning(f"Request NOT ok, response: {content}")
                     return None
@@ -245,8 +248,9 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             async with self.session.get(url, params=params) as r:
                 content = await r.content.read()
                 content = content.decode()
-                if r.ok:
-                    self.logger.info(f"Request ok, response: {content}")
+                if r.status == 200:
+                    self.logger.debug(f"Request ok, response: {content}")
+                    
                     j = json.loads(content)
                     username = j["data"]["username"]
                     password = j["data"]["password"]
