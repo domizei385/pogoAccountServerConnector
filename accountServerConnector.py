@@ -62,7 +62,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 if reason == 'maintenance' or reason == 'limit':
                     await self.burn_account(origin, reason=reason, encounters=encounters)
                     self.logger.info('Stopping app and resetting data...')
-                    await self.stop_pogo()
+                    await strategy.stop_pogo()
                     await asyncio.sleep(5)
                     await strategy._communicator.reset_app_data("com.nianticlabs.pokemongo")
                 else:
