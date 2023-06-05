@@ -193,8 +193,14 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                             if worker in self.__worker_strategy:
                                 if not worker in self.__excluded_workers:
                                     self.logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__encounter_limit})")
-                                    asyncio.run(self.__worker_strategy[worker]._switch_user('limit'))
-                                    asyncio.run(self._delete_worker_stats(session, worker))
+                                    try:
+                                        await self.__worker_strategy[worker]._switch_user('limit')
+                                    except:
+                                        pass
+                                    try:
+                                        await self._delete_worker_stats(session, worker)
+                                    except:
+                                        pass
                                 else:
                                     self.logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
                             else:
