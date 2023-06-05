@@ -61,7 +61,12 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                         self.logger.opt(exception=True).error(f"Exception while getting number of encounters for {origin}")
                 if reason == 'maintenance' or reason == 'limit':
                     await self.burn_account(origin, reason=reason, encounters=encounters)
-                await old_switch_user(reason)
+                    self.logger.info('Stopping app and resetting data...')
+                    await self.stop_pogo()
+                    await asyncio.sleep(5)
+                    await strategy._communicator.reset_app_data("com.nianticlabs.pokemongo")
+                else:
+                    await old_switch_user(reason)
 
             if logintype == "ptc" and strategy._switch_user != new_switch_user:
                 self.logger.debug("patch _switch_user")
