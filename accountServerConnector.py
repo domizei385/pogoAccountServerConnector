@@ -250,7 +250,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         url = f"http://{self.server_host}:{self.server_port}/get/{origin}"
         self.logger.info(f"Try to get account from: {url}")
         try:
-            params = {'region': self.region, 'leveling': 1 if level_mode else 0}
+            params = {'region': self.region, 'leveling': level_mode}
             if reason:
                 params['reason'] = reason
             async with self.session.get(url, params=params) as r:
