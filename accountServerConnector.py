@@ -51,10 +51,16 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     reasons[origin] = reason
                 # TODO: log user out in backend for better timeout handling
                 self.logger.info(f"_switch_user(origin={origin}, reason={reason})")
-                if reason == 'maintenance':
-                    await self.burn_account(origin, reason=reason)
-                elif reason == 'limit':
-                    await self.burn_account(origin, reason=reason, encounters=5000)
+                encounters = 0
+                async with self.__db_wrapper as session, session:
+                    try:
+                        counters = await self.count_by_worker(session, worker=origin)
+                        if origin in counters:
+                            encounters = counters[origin]
+                    except Exception:
+                        self.logger.opt(exception=True).error(f"Exception while getting number of encounters for {origin}")
+                if reason == 'maintenance' or reason == 'limit':
+                    await self.burn_account(origin, reason=reason, encounters=encounters)
                 await old_switch_user(reason)
 
             if logintype == "ptc" and strategy._switch_user != new_switch_user:
@@ -200,7 +206,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
             await asyncio.sleep(self.__worker_encounter_check_interval_sec)
 
-    async def count_by_worker(self, session: AsyncSession) -> dict[str, int]:
+    async def count_by_worker(self, session: AsyncSession, worker: str=None) -> dict[str, int]:
         stmt = select(
             TrsStatsDetectWildMonRaw.worker,
             func.count("*")) \
@@ -208,8 +214,10 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             .group_by(TrsStatsDetectWildMonRaw.worker)
         result = await session.execute(stmt)
         worker_count: Dict[str, int] = {}
-        for worker, count in result.all():
-            worker_count[worker] = count
+        for db_worker, count in result.all():
+            if worker and worker != db_worker:
+                continue
+            worker_count[db_worker] = count
         return worker_count
 
     async def _delete_worker_stats(self, session: AsyncSession, worker: str) -> None:
