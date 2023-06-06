@@ -242,14 +242,14 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
     async def available_accounts(self, origin):
         url = f"http://{self.server_host}:{self.server_port}/get/availability"
         try:
-            params = {'origin': origin, 'leveling': 1 if await self.mm.routemanager_of_origin_is_levelmode(origin) else 0, 'region': self.region}
+            params = {'device': origin, 'leveling': 1 if await self.mm.routemanager_of_origin_is_levelmode(origin) else 0, 'region': self.region}
             async with self.session.get(url, params=params) as r:
                 content = await r.content.read()
                 content = content.decode()
                 if r.ok:
                     payload = json.loads(content)
                     self.logger.debug(f"Request ok, response: {payload}")
-                    return int(payload['available'])
+                    return int(payload['data']['available'])
                 else:
                     self.logger.warning(f"Request NOT ok, response: {content}")
                     return 0
