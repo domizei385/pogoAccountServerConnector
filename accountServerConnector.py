@@ -240,25 +240,22 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         await session.commit()
 
     async def available_accounts(self, origin):
-        url = f"http://{self.server_host}:{self.server_port}/stats"
+        url = f"http://{self.server_host}:{self.server_port}/get/availability"
         try:
-            async with self.session.get(url) as r:
+            params = {'origin': origin, 'leveling': await self.mm.routemanager_of_origin_is_levelmode(origin), 'region': self.region}
+            async with self.session.get(url, params=params) as r:
                 content = await r.content.read()
                 content = content.decode()
                 if r.ok:
                     payload = json.loads(content)
                     self.logger.debug(f"Request ok, response: {payload}")
-                    available = payload[self.region]['available']
-                    if await self.mm.routemanager_of_origin_is_levelmode(origin):
-                        return int(available['unleveled'])
-                    else:
-                        return int(available['leveled'])
+                    return int(payload['available'])
                 else:
                     self.logger.warning(f"Request NOT ok, response: {content}")
-                    return None
+                    return 0
         except Exception as e:
             self.logger.exception(f"Exception trying to request account from account server: {e}")
-            return None
+            return 0
 
     async def request_account(self, origin, reason=None):
         level_mode = await self.mm.routemanager_of_origin_is_levelmode(origin)
