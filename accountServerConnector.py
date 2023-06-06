@@ -50,12 +50,23 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 if reason:
                     reasons[origin] = reason
                 # TODO: log user out in backend for better timeout handling
-                self.logger.info(f"_switch_user(origin={origin}, reason={reason})")
-                if reason == 'maintenance':
-                    await self.burn_account(origin, reason=reason)
-                elif reason == 'limit':
-                    await self.burn_account(origin, reason=reason, encounters=5000)
-                await old_switch_user(reason)
+                self.logger.debug(f"_switch_user(origin={origin}, reason={reason})")
+                encounters = 0
+                async with self.__db_wrapper as session, session:
+                    try:
+                        counters = await self.count_by_worker(session, worker=origin)
+                        if origin in counters:
+                            encounters = counters[origin]
+                    except Exception:
+                        self.logger.opt(exception=True).error(f"Exception while getting number of encounters for {origin}")
+                if reason == 'maintenance' or reason == 'limit':
+                    await self.burn_account(origin, reason=reason, encounters=encounters)
+                    self.logger.info('Stopping app and resetting data...')
+                    await strategy.stop_pogo()
+                    await asyncio.sleep(5)
+                    await strategy._communicator.reset_app_data("com.nianticlabs.pokemongo")
+                else:
+                    await old_switch_user(reason)
 
             if logintype == "ptc" and strategy._switch_user != new_switch_user:
                 self.logger.debug("patch _switch_user")
@@ -76,8 +87,9 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 async def new_track_ptc_login():
                     # Suppress login attempt when no account is available
                     count = await self.available_accounts(worker_state.origin)
-                    self.logger.info(f"Accounts available for {worker_state.origin}: {str(count)}. Allowing PTC login")
-                    return count > 0 and await old_track_ptc_login()
+                    allow_login = count > 0 and await old_track_ptc_login()
+                    self.logger.info(f"Accounts available for {worker_state.origin}: {str(count)}. {'Allowing' if allow_login else 'Preventing'} PTC login.")
+                    return allow_login
                 if strategy._word_to_screen_matching.track_ptc_login != new_track_ptc_login:
                     self.logger.debug("patch track_ptc_login")
                     strategy._word_to_screen_matching.track_ptc_login = new_track_ptc_login
@@ -182,25 +194,30 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     counters = await self.count_by_worker(session)
                     self.logger.info(str(counters))
                     for worker, count in counters.items():
-                        if count > self.__encounter_limit:
-                            if worker in self.__worker_strategy:
-                                if not worker in self.__excluded_workers:
-                                    self.logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__encounter_limit})")
-                                    success = await self.__worker_strategy[worker]._switch_user('limit')
-                                    if success:
-                                        await self._delete_worker_stats(session, worker)
-                                    else:
-                                        self.logger.warning(f"Failed to call _switch_user for worker {worker} with strategy {type(self.__worker_strategy[worker]).__name__}")
-                                else:
-                                    self.logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
+                        if count < self.__encounter_limit:
+                            continue
+                        if worker in self.__worker_strategy:
+                            if not worker in self.__excluded_workers:
+                                self.logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__encounter_limit})")
+                                try:
+                                    await self.__worker_strategy[worker]._switch_user('limit')
+                                except Exception:
+                                    self.logger.opt(exception=True).error("Exception while switching user")
+                                try:
+                                    self.logger.info(f"Deleting worker stats for {worker}")
+                                    await self._delete_worker_stats(session, worker)
+                                except Exception as e:
+                                    self.logger.opt(exception=True).error("Exception while deleting worker stats")
                             else:
-                                self.logger.warning(f"Unable to switch user on worker {worker} as strategy instance is missing")
+                                self.logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
+                        else:
+                            self.logger.warning(f"Unable to switch user on worker {worker} as strategy instance is missing")
                 except Exception:
                     self.logger.opt(exception=True).error("Unhandled exception in pogoAccountServerConnector! Trying to continue... ")
 
             await asyncio.sleep(self.__worker_encounter_check_interval_sec)
 
-    async def count_by_worker(self, session: AsyncSession) -> dict[str, int]:
+    async def count_by_worker(self, session: AsyncSession, worker: str=None) -> dict[str, int]:
         stmt = select(
             TrsStatsDetectWildMonRaw.worker,
             func.count("*")) \
@@ -208,36 +225,37 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             .group_by(TrsStatsDetectWildMonRaw.worker)
         result = await session.execute(stmt)
         worker_count: Dict[str, int] = {}
-        for worker, count in result.all():
-            worker_count[worker] = count
+        for db_worker, count in result.all():
+            if worker and worker != db_worker:
+                continue
+            worker_count[db_worker] = count
         return worker_count
 
-    async def _delete_worker_stats(self, session: AsyncSession, worker: str) -> None:
-        self.logger.info(f"Deleting worker stats for {worker}")
+    @staticmethod
+    async def _delete_worker_stats(session: AsyncSession, worker: str) -> None:
         stmt = delete(TrsStatsDetectWildMonRaw) \
             .where(TrsStatsDetectWildMonRaw.worker == worker)
         await session.execute(stmt)
+        print("Deleted stats for " + worker)
+        await session.commit()
 
     async def available_accounts(self, origin):
-        url = f"http://{self.server_host}:{self.server_port}/stats"
+        url = f"http://{self.server_host}:{self.server_port}/get/availability"
         try:
-            async with self.session.get(url) as r:
+            params = {'device': origin, 'leveling': 1 if await self.mm.routemanager_of_origin_is_levelmode(origin) else 0, 'region': self.region}
+            async with self.session.get(url, params=params) as r:
                 content = await r.content.read()
                 content = content.decode()
                 if r.ok:
                     payload = json.loads(content)
                     self.logger.debug(f"Request ok, response: {payload}")
-                    available = payload[self.region]['available']
-                    if await self.mm.routemanager_of_origin_is_levelmode(origin):
-                        return int(available['unleveled'])
-                    else:
-                        return int(available['leveled'])
+                    return int(payload['data']['available'])
                 else:
                     self.logger.warning(f"Request NOT ok, response: {content}")
-                    return None
+                    return 0
         except Exception as e:
             self.logger.exception(f"Exception trying to request account from account server: {e}")
-            return None
+            return 0
 
     async def request_account(self, origin, reason=None):
         level_mode = await self.mm.routemanager_of_origin_is_levelmode(origin)
@@ -291,10 +309,10 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         if encounters:
             data['encounters'] = encounters
         url = f"http://{self.server_host}:{self.server_port}/set/{origin}/burned"
-        self.logger.info(f"Burning account of origin {origin}")
+        self.logger.info(f"Burning account of origin {origin} with data {str(data)}")
         try:
             async with self.session.post(url, json=data) as r:
-                # TODO: drop stats data for origin, track in history table
+                # TODO: drop stats data for origin
 
                 content = await r.content.read()
                 content = content.decode()
