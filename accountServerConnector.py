@@ -59,12 +59,14 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                         return None
                     origin = device_entry.name
                     level_mode = await self.mm.routemanager_of_origin_is_levelmode(origin)
-                    account_info = await self._request_account(origin, level_mode)
+                    account_info = await self._request_account(origin, level_mode, purpose=purpose, location=location_to_scan)
                     if not account_info:
                         return None
                     self._extract_remaining_encounters(origin, account_info)
+                    softban_info = self._extract_softban_info(account_info)
                     auth = SettingsPogoauth(username=account_info["username"], password=account_info["password"], level=account_info["level"],
-                                            instance_id=self._db_wrapper.get_instance_id(), device_id=device_id, login_type="ptc")
+                                            instance_id=self._db_wrapper.get_instance_id(), device_id=device_id, login_type="ptc",
+                                            last_softban_action=softban_info[0] if softban_info else None, last_softban_action_location=softban_info[1] if softban_info else None)
                     logger.info("Returning auth " + str(auth))
                     return auth
             return None
@@ -135,9 +137,11 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     logger.warning("Device ID {} not found in device table", device_id)
                     return None
                 origin = device_entry.name
-                self.__softban[origin] = (time_of_action, location_of_action)
-                # TODO: api call
-                #logger.warning("set_last_softban_action: To be implemented")
+                try:
+                    await self._set_last_softban_action(origin, time_of_action, location_of_action)
+                except Exception as ex:
+                    logger.warning("Unable to set softban info: {}", ex)
+                    pass
         self._account_handler.set_last_softban_action = new_set_last_softban_action
         self.logger.success("patched set_last_softban_action")
 
@@ -182,8 +186,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     await self._delete_worker_stats(session, origin)
                     await strategy._clear_game_data()
                     await asyncio.sleep(5)
-                    await self.turn_screen_on_and_start_pogo()
-                    if not await self._ensure_pogo_topmost():
+                    await strategy.turn_screen_on_and_start_pogo()
+                    if not await strategy._ensure_pogo_topmost():
                         logger.error('Kill Worker...')
                         raise InternalStopWorkerException("Pogo not topmost app during switching of users")
                     logger.info('Switching finished ...')
@@ -214,7 +218,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.logger.success("patched get_strategy")
 
     async def patch_get_assignment(self):
-        async def new_get_assignment(device_id: int) -> Optional[str]:
+        async def new_get_assignment(device_id: int) -> Optional[SettingsPogoauth]:
             async with self._db_wrapper as session, session:
                 device_entry: Optional[SettingsDevice] = await SettingsDeviceHelper.get(
                     session, self._db_wrapper.get_instance_id(), device_id)
@@ -226,10 +230,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 if not account_info:
                     return None
                 self._extract_remaining_encounters(origin, account_info)
+                softban_info = self._extract_softban_info(account_info)
                 # TODO: extract to method to share with get_account
-                softban_info = None
-                if origin in self.__softban:
-                    softban_info = self.__softban[origin]
                 auth = SettingsPogoauth(username=account_info["username"], password=None, level=account_info["level"],
                                         instance_id=self._db_wrapper.get_instance_id(), device_id=device_id, login_type="ptc",
                                         last_softban_action=softban_info[0] if softban_info else None, last_softban_action_location=softban_info[1] if softban_info else None)
@@ -281,7 +283,6 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
         self.__worker_strategy = dict()
         self.__remaining_encounters: dict[str, int] = dict()
-        self.__softban: dict[str, tuple[datetime, Location]] = dict()
         self.__worker_encounter_check_interval_sec = self._pluginconfig.getint(statusname, "encounter_check_interval", fallback=30 * 60)
         self.__excluded_workers = ['ing21x64', 'ing20x64', 'ing18x64', 'ing16x64']
 
@@ -328,7 +329,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             async with self._db_wrapper as session, session:
                 counters = await self._count_by_worker(session)
                 for worker, count in counters.items():
-                    if worker in self.__remaining_encounters and count < self.__remaining_encounters[worker]:
+                    if not worker in self.__remaining_encounters or count < self.__remaining_encounters[worker]:
                         continue
                     if worker in self.__worker_strategy:
                         if not worker in self.__excluded_workers:
@@ -364,6 +365,20 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             worker_count[worker] = 0
         return worker_count[worker] if worker else worker_count
 
+    @staticmethod
+    def _extract_softban_info(account_info: dict[str, any]) -> tuple[datetime, Location]:
+        softban_info = None
+        try:
+            if 'softban_info' in account_info:
+                #logger.info(f"Softban info: {account_info['softban_info']}")
+                time = datetime.datetime.fromisoformat(account_info["softban_info"]["time"])
+                location = Location.from_json(account_info["softban_info"]["location"])
+                softban_info = (time, location)
+                logger.info(f"softban_info time from server {time} for {account_info['username']}")
+        except Exception as ex:
+            logger.warning("Unable to extract softban_info: {}", ex)
+        return softban_info
+
     def _extract_remaining_encounters(self, origin, account_info) -> int:
         if not account_info:
             return 9999999
@@ -384,7 +399,6 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             stmt = delete(TrsStatsDetectWildMonRaw) \
                 .where(TrsStatsDetectWildMonRaw.worker == worker)
             await session.execute(stmt)
-            logger.info("Deleted worker stats for " + worker)
             await session.commit()
         except Exception:
             logger.opt(exception=True).error("Exception while deleting worker stats")
@@ -394,12 +408,17 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         r, content = await self.__get(f"/get/availability", params)
         return content['available'] if r and r.status == 200 else 0
 
-    async def _request_account(self, origin: str, level_mode: bool, reason=None):
-        self.logger.info(f"Try to get account for {origin}")
-        params = {'region': self.region, 'leveling': 1 if level_mode else 0}
+    async def _request_account(self, origin: str, level_mode: bool, purpose: AccountPurpose, reason=None, location:Optional[Location]=None):
+        self.logger.debug(f"Try to get account for {origin}")
+        data = {'region': self.region, 'leveling': 1 if level_mode else 0}
         if reason:
-            params['reason'] = reason
-        r, content = await self.__get(f"/get/{origin}", params)
+            data['reason'] = reason
+        if location:
+            data['location'] = [location.lat, location.lng]
+        if location:
+            data['purpose'] = purpose.value
+        self.logger.debug(f"_request_account: {data}")
+        r, content = await self.__post(f"/get/{origin}", data)
         return content if r and r.status == 200 else None
 
     @cached(ttl=5)
@@ -429,6 +448,12 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             data['encounters'] = encounters
         self.logger.info(f"Burning account of origin {origin} with data {str(data)}")
         r, _ = await self.__post(f"/set/{origin}/burned", data)
+        return r and r.ok
+
+    async def _set_last_softban_action(self, origin: str, time_of_action: datetime, location: Location):
+        data = {"time": time_of_action.isoformat(), "location": [location.lat, location.lng]}
+        self.logger.debug(f"Setting softban of origin {origin} with data {str(data)}")
+        r, _ = await self.__post(f"/set/{origin}/softban", data)
         return r and r.ok
 
     async def __get(self, endpoint: str, params: Any = None):
