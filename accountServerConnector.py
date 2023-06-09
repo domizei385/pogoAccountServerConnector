@@ -70,6 +70,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     logger.info("Returning auth " + str(auth))
                     return auth
             return None
+
         self._account_handler.get_account = new_get_account
         self.logger.success("patched get_account")
 
@@ -87,6 +88,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 encounters = await self._count_by_worker(session, worker=origin)
                 await self._delete_worker_stats(session, origin)
                 await self._logout(origin, encounters)
+
         self._account_handler.notify_logout = new_notify_logout
         self.logger.success("patched notify_logout")
 
@@ -142,6 +144,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 except Exception as ex:
                     logger.warning("Unable to set softban info: {}", ex)
                     pass
+
         self._account_handler.set_last_softban_action = new_set_last_softban_action
         self.logger.success("patched set_last_softban_action")
 
@@ -161,6 +164,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     return False
                 return True if int(account_info["is_burnt"]) else False
             return False
+
         self._account_handler.is_burnt = new_is_burnt
         self.logger.success("patched is_burnt")
 
@@ -204,11 +208,17 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             old_check_ptc_login_ban = strategy._word_to_screen_matching.check_ptc_login_ban
 
             async def new_check_ptc_login_ban():
+                try:
+                    purpose = await self.mm.routemanager_get_purpose_of_device(worker_state.area_id)
+                except:
+                    logger.warning("Unable to determine worker state")
+                    purpose = 'level' if await self.mm.routemanager_of_origin_is_levelmode(worker_state.origin) else 'iv'
                 # Suppress login attempt when no account is available
-                count = await self._available_accounts(worker_state.origin)
+                count = await self._available_accounts(worker_state.origin, purpose)
                 allow_login = count > 0 and await old_check_ptc_login_ban()
-                self.logger.info(f"Accounts available for {worker_state.origin}: {str(count)}. {'Allowing' if allow_login else 'Preventing'} PTC login.")
+                self.logger.info(f"Accounts available for {worker_state.origin} @ {purpose}: {str(count)}. {'Allowing' if allow_login else 'Preventing'} PTC login.")
                 return allow_login
+
             if strategy._word_to_screen_matching.check_ptc_login_ban != new_check_ptc_login_ban:
                 self.logger.debug("patch check_ptc_login_ban")
                 strategy._word_to_screen_matching.check_ptc_login_ban = new_check_ptc_login_ban
@@ -239,7 +249,6 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
         self._account_handler.get_assignment = new_get_assignment
         self.logger.success("patched get_assignment")
-
 
     def __init__(self, subapp_to_register_to: web.Application, mad_parts: Dict):
         super().__init__(subapp_to_register_to, mad_parts)
@@ -345,7 +354,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
             await asyncio.sleep(self.__worker_encounter_check_interval_sec)
 
-    async def _count_by_worker(self, session: AsyncSession, worker: str=None) -> Any:
+    async def _count_by_worker(self, session: AsyncSession, worker: str = None) -> Any:
         logger.debug("Getting # encounters")
         worker_count: Dict[str, int] = {}
         try:
@@ -370,11 +379,11 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         softban_info = None
         try:
             if 'softban_info' in account_info:
-                #logger.info(f"Softban info: {account_info['softban_info']}")
+                # logger.info(f"Softban info: {account_info['softban_info']}")
                 time = datetime.datetime.fromisoformat(account_info["softban_info"]["time"])
                 location = Location.from_json(account_info["softban_info"]["location"])
                 softban_info = (time, location)
-                logger.info(f"softban_info time from server {time} for {account_info['username']}")
+                logger.debug(f"softban_info time from server {time} for {account_info['username']}")
         except Exception as ex:
             logger.warning("Unable to extract softban_info: {}", ex)
         return softban_info
@@ -403,14 +412,14 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         except Exception:
             logger.opt(exception=True).error("Exception while deleting worker stats")
 
-    async def _available_accounts(self, origin):
-        params = {'device': origin, 'leveling': 1 if await self.mm.routemanager_of_origin_is_levelmode(origin) else 0, 'region': self.region}
+    async def _available_accounts(self, origin: str, purpose: AccountPurpose = None):
+        params = {'device': origin, 'region': self.region, 'purpose': purpose.value}
         r, content = await self.__get(f"/get/availability", params)
         return content['available'] if r and r.status == 200 else 0
 
-    async def _request_account(self, origin: str, level_mode: bool, purpose: AccountPurpose, reason=None, location:Optional[Location]=None):
+    async def _request_account(self, origin: str, level_mode: bool, purpose: AccountPurpose, reason=None, location: Optional[Location] = None):
         self.logger.debug(f"Try to get account for {origin}")
-        data = {'region': self.region, 'leveling': 1 if level_mode else 0}
+        data = {'region': self.region}
         if reason:
             data['reason'] = reason
         if location:
