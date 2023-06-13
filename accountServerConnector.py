@@ -293,7 +293,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.__worker_strategy = dict()
         self.__remaining_encounters: dict[str, int] = dict()
         self.__worker_encounter_check_interval_sec = self._pluginconfig.getint(statusname, "encounter_check_interval", fallback=30 * 60)
-        self.__excluded_workers = ['ing21x64', 'ing20x64', 'ing18x64', 'ing16x64']
+        self.__excluded_workers = [x.strip(' ') for x in self._pluginconfig.get(statusname, "excluded_workers", fallback='').split(",")]
 
         if self.auth_username and self.auth_password:
             auth = aiohttp.BasicAuth(self.auth_username, self.auth_password)
