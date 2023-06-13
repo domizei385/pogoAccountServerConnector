@@ -2,11 +2,12 @@ import asyncio
 import datetime
 import json
 import os
+import time
 from typing import (Any, Dict, Optional)
 
 import aiohttp
-from aiocache import cached
 import mapadroid.plugins.pluginBase
+from aiocache import cached
 from aiohttp import web
 from loguru import logger
 from mapadroid.account_handler.AbstractAccountHandler import (
@@ -14,8 +15,8 @@ from mapadroid.account_handler.AbstractAccountHandler import (
 from mapadroid.db.helper.SettingsDeviceHelper import SettingsDeviceHelper
 from mapadroid.db.model import SettingsDevice, SettingsPogoauth
 from mapadroid.db.model import TrsStatsDetectWildMonRaw
-from mapadroid.utils.madGlobals import InternalStopWorkerException
 from mapadroid.utils.collections import Location
+from mapadroid.utils.madGlobals import InternalStopWorkerException
 from plugins.accountServerConnector.endpoints import register_custom_plugin_endpoints
 from sqlalchemy import delete
 from sqlalchemy import func
@@ -341,25 +342,45 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     return None
                 self._extract_remaining_encounters(worker, account_info)
 
+        ignored_workers: list[str] = list()
+
+        def done_callback(worker, task_start):
+            duration = time.time() - task_start
+            if duration > 30:
+                logger.info(f"Switching of {worker} finished after {int(duration)}s")
+            ignored_workers.remove(worker)
+
         while True:
             async with self._db_wrapper as session, session:
                 counters = await self._count_by_worker(session)
+                loop = asyncio.get_running_loop()
+
                 for worker, count in counters.items():
                     if not worker in self.__remaining_encounters or count < self.__remaining_encounters[worker]:
                         continue
-                    if worker in self.__worker_strategy:
-                        if not worker in self.__excluded_workers:
-                            logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__remaining_encounters[worker]})")
-                            try:
-                                await self.__worker_strategy[worker]._switch_user('limit')
-                            except Exception:
-                                logger.opt(exception=True).error("Exception while switching user")
+                    if worker in ignored_workers:
+                        logger.info(f"Worker {worker} is just switching. Ignoring")
+                        continue
+                    with logger.contextualize(identifier=worker, name="worker"):
+                        if worker in self.__worker_strategy:
+                            if not worker in self.__excluded_workers:
+                                logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__remaining_encounters[worker]})")
+                                ignored_workers.append(worker)
+                                task = loop.create_task(self._switch_user_due_to_limit(worker))
+                                task_start = time.time()
+                                task.add_done_callback(lambda t: done_callback(worker, task_start))
+                            else:
+                                logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
                         else:
-                            logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
-                    else:
-                        logger.warning(f"Unable to switch user on worker {worker} due to encounter_limit as strategy instance is missing")
+                            logger.warning(f"Unable to switch user on worker {worker} due to encounter_limit as strategy instance is missing")
 
             await asyncio.sleep(self.__worker_encounter_check_interval_sec)
+
+    async def _switch_user_due_to_limit(self, worker):
+        try:
+            await self.__worker_strategy[worker]._switch_user('limit')
+        except Exception:
+            logger.opt(exception=True).error(f"Exception while switching user of {worker}")
 
     async def _count_by_worker(self, session: AsyncSession, worker: str = None) -> Any:
         logger.debug("Getting # encounters")
