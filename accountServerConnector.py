@@ -333,7 +333,14 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         return True
 
     async def _check_encounters(self):
-        # TODO: get encounter_limit for all active workers and store locally
+        async with self._db_wrapper as session, session:
+            counters = await self._count_by_worker(session)
+            for worker, _ in counters.items():
+                account_info = await self._get_account_info(worker)
+                if not account_info:
+                    return None
+                self._extract_remaining_encounters(worker, account_info)
+
         while True:
             async with self._db_wrapper as session, session:
                 counters = await self._count_by_worker(session)
