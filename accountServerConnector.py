@@ -43,7 +43,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 await self._track_level(device_entry.name, level)
 
         self._account_handler.set_level = new_set_level
-        self.logger.success("patched set_level")
+        logger.success("patched set_level")
 
     async def patch_get_account(self):
         # TODO: forward purpose and location_to_use
@@ -67,12 +67,12 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     auth = SettingsPogoauth(username=account_info["username"], password=account_info["password"], level=account_info["level"],
                                             instance_id=self._db_wrapper.get_instance_id(), device_id=device_id, login_type="ptc",
                                             last_softban_action=softban_info[0] if softban_info else None, last_softban_action_location=softban_info[1] if softban_info else None)
-                    logger.info("Returning auth " + str(auth))
+                    logger.debug(f"Returning auth {auth}")
                     return auth
             return None
 
         self._account_handler.get_account = new_get_account
-        self.logger.success("patched get_account")
+        logger.success("patched get_account")
 
     async def patch_notify_logout(self):
         async def new_notify_logout(device_id: int) -> None:
@@ -83,14 +83,14 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     logger.warning("Device ID {} not found in device table", device_id)
                     return None
                 origin = device_entry.name
-                logger.info("Saving logout of {}", origin)
 
                 encounters = await self._count_by_worker(session, worker=origin)
+                logger.debug("Saving logout of {} with {} encounters", origin, encounters)
                 await self._delete_worker_stats(session, origin)
                 await self._logout(origin, encounters)
 
         self._account_handler.notify_logout = new_notify_logout
-        self.logger.success("patched notify_logout")
+        logger.success("patched notify_logout")
 
     # only used for MAD triggered BurnTypes
     async def patch_mark_burnt(self):
@@ -109,7 +109,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 await self._delete_worker_stats(session, origin)
 
         self._account_handler.mark_burnt = new_mark_burnt
-        self.logger.success("patched mark_burnt")
+        logger.success("patched mark_burnt")
 
     async def patch_get_assigned_username(self):
         async def new_get_assigned_username(device_id: int) -> Optional[str]:
@@ -127,7 +127,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 return account_info["username"]
 
         self._account_handler.get_assigned_username = new_get_assigned_username
-        self.logger.success("patched get_assigned_username")
+        logger.success("patched get_assigned_username")
 
     async def patch_set_last_softban_action(self):
         async def new_set_last_softban_action(device_id: int, time_of_action: datetime.datetime,
@@ -146,7 +146,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     pass
 
         self._account_handler.set_last_softban_action = new_set_last_softban_action
-        self.logger.success("patched set_last_softban_action")
+        logger.success("patched set_last_softban_action")
 
     async def patch_is_burnt(self):
         async def new_is_burnt(device_id: int) -> bool:
@@ -156,17 +156,17 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 if not device_entry:
                     logger.warning("Device ID {} not found in device table", device_id)
                     return False
-                logger.info("Checking whether account assigned to {} was burnt or not", device_entry.name)
                 origin = device_entry.name
+                logger.info("Checking whether account is burnt or not", origin)
                 account_info = await self._get_account_info(origin)
                 if not account_info:
-                    logger.warning(f"Unable to check if origin {origin} is_burnt as it currently has no assignment")
+                    logger.warning(f"Unable to check if account is_burnt as there is currently no assignment")
                     return False
                 return True if int(account_info["is_burnt"]) else False
             return False
 
         self._account_handler.is_burnt = new_is_burnt
-        self.logger.success("patched is_burnt")
+        logger.success("patched is_burnt")
 
     async def patch_get_strategy(self):
         old_get_strategy = self.strategy_factory.get_strategy
@@ -178,7 +178,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             async def new_switch_user(reason=None):
                 # reason oneof ['maintenance', 'limit', 'level', 'teleport']
                 origin = worker_state.origin
-                self.logger.info(f"custom _switch_user(origin={origin}, reason={reason})")
+                logger.info(f"custom _switch_user(origin={origin}, reason={reason})")
                 async with self._db_wrapper as session, session:
                     encounters = await self._count_by_worker(session, worker=origin)
                     ## mostly copied from original "_switch_user"
@@ -195,15 +195,16 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                         logger.error('Kill Worker...')
                         raise InternalStopWorkerException("Pogo not topmost app during switching of users")
                     logger.info('Switching finished ...')
+                    return True
 
             if strategy._switch_user and strategy._switch_user != new_switch_user:
-                self.logger.debug("patch _switch_user for " + strategy.__class__.__name__)
+                logger.debug("patch _switch_user for " + strategy.__class__.__name__)
                 strategy._switch_user = new_switch_user
                 self.__worker_strategy[worker_state.origin] = strategy
             elif strategy._switch_user == new_switch_user:
-                self.logger.warning("already patched switch_user")
+                logger.warning("already patched switch_user")
             else:
-                self.logger.warning("unable to patch switch_user")
+                logger.warning("unable to patch switch_user")
 
             old_check_ptc_login_ban = strategy._word_to_screen_matching.check_ptc_login_ban
 
@@ -216,16 +217,16 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 # Suppress login attempt when no account is available
                 count = await self._available_accounts(worker_state.origin, purpose)
                 allow_login = count > 0 and await old_check_ptc_login_ban()
-                self.logger.info(f"Accounts available for {worker_state.origin} @ {purpose}: {str(count)}. {'Allowing' if allow_login else 'Preventing'} PTC login.")
+                logger.info(f"Accounts available for {worker_state.origin} @ {purpose}: {str(count)}. {'Allowing' if allow_login else 'Preventing'} PTC login.")
                 return allow_login
 
             if strategy._word_to_screen_matching.check_ptc_login_ban != new_check_ptc_login_ban:
-                self.logger.debug("patch check_ptc_login_ban")
+                logger.debug("patch check_ptc_login_ban")
                 strategy._word_to_screen_matching.check_ptc_login_ban = new_check_ptc_login_ban
             return strategy
 
         self.strategy_factory.get_strategy = new_get_strategy
-        self.logger.success("patched get_strategy")
+        logger.success("patched get_strategy")
 
     async def patch_get_assignment(self):
         async def new_get_assignment(device_id: int) -> Optional[SettingsPogoauth]:
@@ -248,14 +249,13 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 return auth
 
         self._account_handler.get_assignment = new_get_assignment
-        self.logger.success("patched get_assignment")
+        logger.success("patched get_assignment")
 
     def __init__(self, subapp_to_register_to: web.Application, mad_parts: Dict):
         super().__init__(subapp_to_register_to, mad_parts)
 
         self._rootdir = os.path.dirname(os.path.abspath(__file__))
         self._mad = self._mad_parts
-        self.logger = self._mad['logger']
         self.mm = self._mad['mapping_manager']
         self._account_handler = self.mm._MappingManager__account_handler
         self._assignment_lock = self._account_handler._assignment_lock
@@ -264,13 +264,13 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.strategy_factory = self._mad['ws_server']._WebsocketServer__strategy_factory
 
         statusname = self._mad["args"].status_name
-        self.logger.info("Got statusname: {}", statusname)
+        logger.info("Got statusname: {}", statusname)
         if os.path.isfile(self._rootdir + "/plugin-" + statusname + ".ini"):
             self._pluginconfig.read(self._rootdir + "/plugin-" + statusname + ".ini")
-            self.logger.info("loading instance-specific config for {}", statusname)
+            logger.info("loading instance-specific config for {}", statusname)
         else:
             self._pluginconfig.read(self._rootdir + "/plugin.ini")
-            self.logger.info("loading standard plugin.ini")
+            logger.info("loading standard plugin.ini")
 
         self._versionconfig.read(self._rootdir + "/version.mpl")
         self.author = self._versionconfig.get("plugin", "author", fallback="unknown")
@@ -342,15 +342,15 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                         continue
                     if worker in self.__worker_strategy:
                         if not worker in self.__excluded_workers:
-                            self.logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__remaining_encounters[worker]})")
+                            logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__remaining_encounters[worker]})")
                             try:
                                 await self.__worker_strategy[worker]._switch_user('limit')
                             except Exception:
-                                self.logger.opt(exception=True).error("Exception while switching user")
+                                logger.opt(exception=True).error("Exception while switching user")
                         else:
-                            self.logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
+                            logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
                     else:
-                        self.logger.warning(f"Unable to switch user on worker {worker} due to encounter_limit as strategy instance is missing")
+                        logger.warning(f"Unable to switch user on worker {worker} due to encounter_limit as strategy instance is missing")
 
             await asyncio.sleep(self.__worker_encounter_check_interval_sec)
 
@@ -361,21 +361,20 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             stmt = select(
                 TrsStatsDetectWildMonRaw.worker,
                 func.count("*")) \
-                .select_from(TrsStatsDetectWildMonRaw) \
-                .group_by(TrsStatsDetectWildMonRaw.worker)
+                .select_from(TrsStatsDetectWildMonRaw)
+            if worker:
+                stmt = stmt.where(TrsStatsDetectWildMonRaw.worker == worker)
+            stmt = stmt.group_by(TrsStatsDetectWildMonRaw.worker)
             result = await session.execute(stmt)
             for db_worker, count in result.all():
-                if worker and worker != db_worker:
-                    continue
                 worker_count[db_worker] = count
         except Exception:
-            self.logger.opt(exception=True).error(f"Exception while getting number of encounters for {worker}")
+            logger.opt(exception=True).error(f"Exception while getting number of encounters for {worker}")
         if worker and not worker in worker_count:
             worker_count[worker] = 0
         return worker_count[worker] if worker else worker_count
 
-    @staticmethod
-    def _extract_softban_info(account_info: dict[str, any]) -> tuple[datetime, Location]:
+    def _extract_softban_info(self, account_info: dict[str, any]) -> tuple[datetime, Location]:
         softban_info = None
         try:
             if 'softban_info' in account_info:
@@ -404,10 +403,10 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
     @staticmethod
     async def _delete_worker_stats(session: AsyncSession, worker: str) -> None:
         try:
-            logger.info(f"Deleting worker stats for {worker}")
             stmt = delete(TrsStatsDetectWildMonRaw) \
                 .where(TrsStatsDetectWildMonRaw.worker == worker)
             await session.execute(stmt)
+            logger.debug(f"Deleted worker stats")
             await session.commit()
         except Exception:
             logger.opt(exception=True).error("Exception while deleting worker stats")
@@ -418,7 +417,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         return content['available'] if r and r.status == 200 else 0
 
     async def _request_account(self, origin: str, level_mode: bool, purpose: AccountPurpose, reason=None, location: Optional[Location] = None):
-        self.logger.debug(f"Try to get account for {origin}")
+        logger.debug(f"Try to get account for {origin}")
         data = {'region': self.region}
         if reason:
             data['reason'] = reason
@@ -426,18 +425,18 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             data['location'] = [location.lat, location.lng]
         if location:
             data['purpose'] = purpose.value
-        self.logger.debug(f"_request_account: {data}")
+        logger.debug(f"_request_account: {data}")
         r, content = await self.__post(f"/get/{origin}", data)
         return content if r and r.status == 200 else None
 
     @cached(ttl=5)
     async def _get_account_info(self, origin: str) -> Optional[dict[str, Any]]:
-        self.logger.debug(f"Try to get account_info of {origin}")
+        logger.debug(f"Try to get account_info of {origin}")
         r, content = await self.__get(f"/get/{origin}/info")
         return content if r and r.status == 200 else None
 
     async def _track_level(self, origin: str, level: int) -> bool:
-        self.logger.debug(f"Setting level {level} for origin {origin}")
+        logger.debug(f"Setting level {level} for origin {origin}")
         r, _ = await self.__post(f"/set/{origin}/level/{level}")
         return r and r.ok
 
@@ -445,7 +444,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         data = {}
         if encounters:
             data['encounters'] = encounters
-        self.logger.info(f"Logging out account for origin {origin} with data {str(data)}")
+        logger.info(f"Logging out. Data: {str(data)}")
         r, _ = await self.__post(f"/set/{origin}/logout", data)
         return r and r.ok
 
@@ -455,13 +454,13 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             data['reason'] = reason
         if encounters:
             data['encounters'] = encounters
-        self.logger.info(f"Burning account of origin {origin} with data {str(data)}")
+        logger.info(f"Burning account of origin {origin} with data {str(data)}")
         r, _ = await self.__post(f"/set/{origin}/burned", data)
         return r and r.ok
 
     async def _set_last_softban_action(self, origin: str, time_of_action: datetime, location: Location):
         data = {"time": time_of_action.isoformat(), "location": [location.lat, location.lng]}
-        self.logger.debug(f"Setting softban of origin {origin} with data {str(data)}")
+        logger.debug(f"Setting softban of origin {origin} with data {str(data)}")
         r, _ = await self.__post(f"/set/{origin}/softban", data)
         return r and r.ok
 
@@ -474,12 +473,12 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 if r.ok:
                     if content:
                         content = json.loads(content)["data"]
-                    self.logger.debug(f"Request ok, response: {content}")
+                    logger.debug(f"Request ok, response: {content}")
                 else:
-                    self.logger.warning(f"Request NOT ok, response: {content}")
+                    logger.warning(f"Request NOT ok, response: {content}")
                 return r, content
         except Exception as e:
-            self.logger.exception(f"Exception trying to run request at {url}: {e}")
+            logger.exception(f"Exception trying to run request at {url}: {e}")
             return None, None
 
     async def __post(self, endpoint: str, data: Any = None):
@@ -494,10 +493,10 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                             content = json.loads(content)["data"]
                     except Exception:
                         pass
-                    self.logger.debug(f"Request ok, response: {content}")
+                    logger.debug(f"Request ok, response: {content}")
                 else:
-                    self.logger.warning(f"Request NOT ok, response: {content}")
+                    logger.warning(f"Request NOT ok, response: {content}")
                 return r, content
         except Exception as e:
-            self.logger.exception(f"Exception trying to run request at {url}: {e}")
+            logger.exception(f"Exception trying to run request at {url}: {e}")
             return None, None
