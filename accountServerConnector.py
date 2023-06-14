@@ -15,6 +15,7 @@ from mapadroid.account_handler.AbstractAccountHandler import (
 from mapadroid.db.helper.SettingsDeviceHelper import SettingsDeviceHelper
 from mapadroid.db.model import SettingsDevice, SettingsPogoauth
 from mapadroid.db.model import TrsStatsDetectWildMonRaw
+from mapadroid.utils.DatetimeWrapper import DatetimeWrapper
 from mapadroid.utils.collections import Location
 from mapadroid.utils.madGlobals import InternalStopWorkerException
 from plugins.accountServerConnector.endpoints import register_custom_plugin_endpoints
@@ -47,7 +48,6 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         logger.success("patched set_level")
 
     async def patch_get_account(self):
-        # TODO: forward purpose and location_to_use
         async def new_get_account(device_id: int, purpose: AccountPurpose,
             location_to_scan: Optional[Location],
             including_google: bool = True) -> Optional[SettingsPogoauth]:
@@ -392,7 +392,9 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 .select_from(TrsStatsDetectWildMonRaw)
             if worker:
                 stmt = stmt.where(TrsStatsDetectWildMonRaw.worker == worker)
-            stmt = stmt.group_by(TrsStatsDetectWildMonRaw.worker)
+            stmt = stmt \
+                .where(TrsStatsDetectWildMonRaw.last_scanned > (DatetimeWrapper.now() - datetime.timedelta(days=1))) \
+                .group_by(TrsStatsDetectWildMonRaw.worker)
             result = await session.execute(stmt)
             for db_worker, count in result.all():
                 worker_count[db_worker] = count
@@ -428,14 +430,15 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             return self.__remaining_encounters[origin]
         return 99999999
 
-    @staticmethod
-    async def _delete_worker_stats(session: AsyncSession, worker: str) -> None:
+    async def _delete_worker_stats(self, session: AsyncSession, worker: str) -> None:
         try:
             stmt = delete(TrsStatsDetectWildMonRaw) \
                 .where(TrsStatsDetectWildMonRaw.worker == worker)
             await session.execute(stmt)
             logger.debug(f"Deleted worker stats")
             await session.commit()
+            if worker in self.__remaining_encounters:
+                del self.__remaining_encounters[worker]
         except Exception:
             logger.opt(exception=True).error("Exception while deleting worker stats")
 
