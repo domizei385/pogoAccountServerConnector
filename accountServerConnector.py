@@ -59,8 +59,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                         logger.warning("Device ID {} not found in device table", device_id)
                         return None
                     origin = device_entry.name
-                    level_mode = await self.mm.routemanager_of_origin_is_levelmode(origin)
-                    account_info = await self._request_account(origin, level_mode, purpose=purpose, location=location_to_scan)
+                    account_info = await self._request_account(origin, purpose=purpose, location=location_to_scan)
                     if not account_info:
                         return None
                     self._extract_remaining_encounters(origin, account_info)
@@ -86,9 +85,11 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 origin = device_entry.name
 
                 encounters = await self._count_by_worker(session, worker=origin)
-                logger.debug("Saving logout of {} with {} encounters", origin, encounters)
+                level = await self.mitm_mapper.get_level(origin)
+
+                logger.debug("Saving logout of {} with {} encounters and level {}", origin, encounters, level)
                 await self._delete_worker_stats(session, origin)
-                await self._logout(origin, encounters)
+                await self._logout(origin, encounters, level)
 
         self._account_handler.notify_logout = new_notify_logout
         logger.success("patched notify_logout")
@@ -106,7 +107,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
                 origin = device_entry.name
                 encounters = await self._count_by_worker(session, worker=origin)
-                await self._burn_account(origin, reason=burn_type.value, encounters=encounters)
+                level = await self.mitm_mapper.get_level(origin)
+                await self._burn_account(origin, reason=burn_type.value, encounters=encounters, level=level)
                 await self._delete_worker_stats(session, origin)
 
         self._account_handler.mark_burnt = new_mark_burnt
@@ -186,8 +188,10 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     # stop and wait for remaining data to be processed
                     await strategy.stop_pogo()
                     await asyncio.sleep(5)
+                    # set_level may not have been called before, forcing update
+                    level = await self.mitm_mapper.get_level(origin)
                     # must burn account before calling clear_game_data, which triggers logout
-                    await self._burn_account(origin, reason=reason, encounters=encounters)
+                    await self._burn_account(origin, reason=reason, encounters=encounters, level=level)
                     await self._delete_worker_stats(session, origin)
                     await strategy._clear_game_data()
                     await asyncio.sleep(5)
@@ -219,7 +223,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 count = await self._available_accounts(worker_state.origin, purpose)
                 allow_login = count > 0 and await old_check_ptc_login_ban()
                 if not allow_login:
-                    logger.warning(f"Accounts available for {purpose}: {count > 1}. {'Allowing' if allow_login else 'Preventing'} PTC login.")
+                    logger.warning(f"Accounts available for {purpose}: {count > 0}. {'Allowing' if allow_login else 'Preventing'} PTC login.")
                 return allow_login
 
             if strategy._word_to_screen_matching.check_ptc_login_ban != new_check_ptc_login_ban:
@@ -448,7 +452,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         r, content = await self.__get(f"/get/availability", params)
         return content['available'] if r and r.status == 200 else 0
 
-    async def _request_account(self, origin: str, level_mode: bool, purpose: AccountPurpose, reason=None, location: Optional[Location] = None):
+    async def _request_account(self, origin: str, purpose: AccountPurpose, reason=None, location: Optional[Location] = None):
         logger.debug(f"Try to get account for {origin}")
         data = {'region': self.region}
         if reason:
@@ -472,21 +476,25 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         r, _ = await self.__post(f"/set/{origin}/level/{level}")
         return r and r.ok
 
-    async def _logout(self, origin: str, encounters: Optional[int]) -> bool:
+    async def _logout(self, origin: str, encounters: Optional[int], level: Optional[int]) -> bool:
         data = {}
         if encounters:
             data['encounters'] = encounters
+        if level:
+            data['level'] = level
         if len(data) > 0:
             logger.debug(f"Logging out. Data: {str(data)}")
         r, _ = await self.__post(f"/set/{origin}/logout", data)
         return r and r.ok
 
-    async def _burn_account(self, origin: str, reason: str = None, encounters: int = None):
+    async def _burn_account(self, origin: str, reason: str = None, encounters: int = None, level: int = None):
         data = {}
         if reason:
             data['reason'] = reason
         if encounters:
             data['encounters'] = encounters
+        if level:
+            data['level'] = level
         logger.info(f"Burning account of origin {origin} with data {str(data)}")
         r, _ = await self.__post(f"/set/{origin}/burned", data)
         return r and r.ok
