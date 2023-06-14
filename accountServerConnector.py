@@ -158,7 +158,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     logger.warning("Device ID {} not found in device table", device_id)
                     return False
                 origin = device_entry.name
-                logger.info("Checking whether account is burnt or not", origin)
+                logger.debug("Checking whether account is burnt")
                 account_info = await self._get_account_info(origin)
                 if not account_info:
                     logger.warning(f"Unable to check if account is_burnt as there is currently no assignment")
@@ -218,7 +218,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 # Suppress login attempt when no account is available
                 count = await self._available_accounts(worker_state.origin, purpose)
                 allow_login = count > 0 and await old_check_ptc_login_ban()
-                logger.info(f"Accounts available for {worker_state.origin} @ {purpose}: {str(count)}. {'Allowing' if allow_login else 'Preventing'} PTC login.")
+                if not allow_login:
+                    logger.warning(f"Accounts available for {purpose}: {count > 1}. {'Allowing' if allow_login else 'Preventing'} PTC login.")
                 return allow_login
 
             if strategy._word_to_screen_matching.check_ptc_login_ban != new_check_ptc_login_ban:
@@ -475,7 +476,8 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         data = {}
         if encounters:
             data['encounters'] = encounters
-        logger.info(f"Logging out. Data: {str(data)}")
+        if len(data) > 0:
+            logger.debug(f"Logging out. Data: {str(data)}")
         r, _ = await self.__post(f"/set/{origin}/logout", data)
         return r and r.ok
 
