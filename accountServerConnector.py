@@ -32,7 +32,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
     def _file_path(self) -> str:
         return os.path.dirname(os.path.abspath(__file__))
 
-    async def patch_set_level(self):
+    async def patch_ah_set_level(self):
         async def new_set_level(device_id: int, level: int):
             async with self._db_wrapper as session, session:
                 device_entry: Optional[SettingsDevice] = await SettingsDeviceHelper.get(
@@ -47,7 +47,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self._account_handler.set_level = new_set_level
         logger.success("patched set_level")
 
-    async def patch_get_account(self):
+    async def patch_ah_get_account(self):
         async def new_get_account(device_id: int, purpose: AccountPurpose,
             location_to_scan: Optional[Location],
             including_google: bool = True) -> Optional[SettingsPogoauth]:
@@ -59,7 +59,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                         logger.warning("Device ID {} not found in device table", device_id)
                         return None
                     origin = device_entry.name
-                    account_info = await self._request_account(origin, purpose=purpose, location=location_to_scan)
+                    account_info = await self._request_account(origin, purpose=purpose, location=location_to_scan, reason='prelogin')
                     if not account_info:
                         return None
                     self._extract_remaining_encounters(origin, account_info)
@@ -74,7 +74,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self._account_handler.get_account = new_get_account
         logger.success("patched get_account")
 
-    async def patch_notify_logout(self):
+    async def patch_ah_notify_logout(self):
         async def new_notify_logout(device_id: int) -> None:
             async with self._db_wrapper as session, session:
                 device_entry: Optional[SettingsDevice] = await SettingsDeviceHelper.get(
@@ -95,7 +95,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         logger.success("patched notify_logout")
 
     # only used for MAD triggered BurnTypes
-    async def patch_mark_burnt(self):
+    async def patch_ah_mark_burnt(self):
         async def new_mark_burnt(device_id: int, burn_type: Optional[BurnType]) -> None:
             logger.info("Trying to mark account of {} as burnt by {}", device_id, burn_type)
             async with self._db_wrapper as session, session:
@@ -114,7 +114,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self._account_handler.mark_burnt = new_mark_burnt
         logger.success("patched mark_burnt")
 
-    async def patch_get_assigned_username(self):
+    async def patch_ah_get_assigned_username(self):
         async def new_get_assigned_username(device_id: int) -> Optional[str]:
             async with self._db_wrapper as session, session:
                 device_entry: Optional[SettingsDevice] = await SettingsDeviceHelper.get(
@@ -132,7 +132,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self._account_handler.get_assigned_username = new_get_assigned_username
         logger.success("patched get_assigned_username")
 
-    async def patch_set_last_softban_action(self):
+    async def patch_ah_set_last_softban_action(self):
         async def new_set_last_softban_action(device_id: int, time_of_action: datetime.datetime,
             location_of_action: Location) -> None:
             async with self._db_wrapper as session, session:
@@ -151,7 +151,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self._account_handler.set_last_softban_action = new_set_last_softban_action
         logger.success("patched set_last_softban_action")
 
-    async def patch_is_burnt(self):
+    async def patch_ah_is_burnt(self):
         async def new_is_burnt(device_id: int) -> bool:
             async with self._db_wrapper as session, session:
                 device_entry: Optional[SettingsDevice] = await SettingsDeviceHelper.get(
@@ -171,7 +171,19 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self._account_handler.is_burnt = new_is_burnt
         logger.success("patched is_burnt")
 
-    async def patch_get_strategy(self):
+    async def patch_mm_handle_login_request(self):
+        old_ip_handle_login_request = self.mm.ip_handle_login_request
+
+        async def new_ip_handle_login_request(ip, origin, limit_seconds=None, limit_count=None):
+            received_slot = await old_ip_handle_login_request(ip, origin, limit_seconds, limit_count)
+            if received_slot:
+                await self._track_login(origin)
+            return received_slot
+
+        self.mm.ip_handle_login_request = new_ip_handle_login_request
+        logger.success("patched ip_handle_login_request")
+
+    async def patch_sf_get_strategy(self):
         old_get_strategy = self.strategy_factory.get_strategy
 
         async def new_get_strategy(worker_type, area_id, communicator, walker_settings, worker_state):
@@ -234,7 +246,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.strategy_factory.get_strategy = new_get_strategy
         logger.success("patched get_strategy")
 
-    async def patch_get_assignment(self):
+    async def patch_ah_get_assignment(self):
         async def new_get_assignment(device_id: int) -> Optional[SettingsPogoauth]:
             async with self._db_wrapper as session, session:
                 device_entry: Optional[SettingsDevice] = await SettingsDeviceHelper.get(
@@ -323,15 +335,16 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
     async def _perform_operation(self):
         if not self._pluginconfig.getboolean("plugin", "active", fallback=False):
             return False
-        await self.patch_get_strategy()
-        await self.patch_set_level()
-        await self.patch_get_account()
-        await self.patch_notify_logout()
-        await self.patch_mark_burnt()
-        await self.patch_is_burnt()
-        await self.patch_get_assigned_username()
-        await self.patch_set_last_softban_action()
-        await self.patch_get_assignment()
+        await self.patch_sf_get_strategy()
+        await self.patch_mm_handle_login_request()
+        await self.patch_ah_set_level()
+        await self.patch_ah_get_account()
+        await self.patch_ah_notify_logout()
+        await self.patch_ah_mark_burnt()
+        await self.patch_ah_is_burnt()
+        await self.patch_ah_get_assigned_username()
+        await self.patch_ah_set_last_softban_action()
+        await self.patch_ah_get_assignment()
 
         loop = asyncio.get_running_loop()
         self.__worker_encounter_limit_check = loop.create_task(self._check_encounters())
@@ -474,6 +487,11 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
     async def _track_level(self, origin: str, level: int) -> bool:
         logger.debug(f"Setting level {level} for origin {origin}")
         r, _ = await self.__post(f"/set/{origin}/level/{level}")
+        return r and r.ok
+
+    async def _track_login(self, origin: str) -> bool:
+        logger.debug(f"Tracking login of {origin}")
+        r, _ = await self.__post(f"/set/{origin}/login")
         return r and r.ok
 
     async def _logout(self, origin: str, encounters: Optional[int], level: Optional[int]) -> bool:
