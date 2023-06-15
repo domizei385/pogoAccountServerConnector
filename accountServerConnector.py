@@ -175,9 +175,18 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         old_ip_handle_login_request = self.mm.ip_handle_login_request
 
         async def new_ip_handle_login_request(ip, origin, limit_seconds=None, limit_count=None):
-            received_slot = await old_ip_handle_login_request(ip, origin, limit_seconds, limit_count)
-            if received_slot:
-                await self._track_login(origin)
+            account_info = await self._get_account_info(origin)
+            if not account_info:
+                logger.info(f"ip_handle_login_request -> Skip IP tracking due to missing (known) assignment")
+                # no assignment, assume pogo app has no cached login so no need to track login right now
+                received_slot = True
+            else:
+                logger.info(f"ip_handle_login_request -> Regular login tracking")
+                self._extract_remaining_encounters(origin, account_info)
+                received_slot = await old_ip_handle_login_request(ip, origin, limit_seconds, limit_count)
+                if received_slot:
+                    await self._track_login(origin)
+
             return received_slot
 
         self.mm.ip_handle_login_request = new_ip_handle_login_request
@@ -226,11 +235,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             old_check_ptc_login_ban = strategy._word_to_screen_matching.check_ptc_login_ban
 
             async def new_check_ptc_login_ban():
-                try:
-                    purpose = await self.mm.routemanager_get_purpose_of_device(worker_state.area_id)
-                except:
-                    logger.warning("Unable to determine worker state")
-                    purpose = 'level' if await self.mm.routemanager_of_origin_is_levelmode(worker_state.origin) else 'iv'
+                purpose = await self.mm.routemanager_get_purpose_of_device(worker_state.area_id)
                 # Suppress login attempt when no account is available
                 count = await self._available_accounts(worker_state.origin, purpose)
                 allow_login = count > 0 and await old_check_ptc_login_ban()
