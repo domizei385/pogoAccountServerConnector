@@ -181,7 +181,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 # no assignment, assume pogo app has no cached login so no need to track login right now
                 received_slot = True
             else:
-                logger.info(f"ip_handle_login_request -> Regular login tracking")
+                logger.debug(f"ip_handle_login_request -> Regular login tracking")
                 self._extract_remaining_encounters(origin, account_info)
                 received_slot = await old_ip_handle_login_request(ip, origin, limit_seconds, limit_count)
                 if received_slot:
@@ -209,11 +209,13 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     # stop and wait for remaining data to be processed
                     await strategy.stop_pogo()
                     await asyncio.sleep(5)
-                    # set_level may not have been called before, forcing update
-                    level = await self.mitm_mapper.get_level(origin)
-                    # must burn account before calling clear_game_data, which triggers logout
-                    await self._burn_account(origin, reason=reason, encounters=encounters, level=level)
-                    await self._delete_worker_stats(session, origin)
+                    # maintenance is handled already through "mark_burnt"
+                    if reason != BurnType.MAINTENANCE.value or encounters > 0:
+                        # set_level may not have been called before, forcing update
+                        level = await self.mitm_mapper.get_level(origin)
+                        # must burn account before calling clear_game_data, which triggers logout
+                        await self._burn_account(origin, reason=reason, encounters=encounters, level=level)
+                        await self._delete_worker_stats(session, origin)
                     await strategy._clear_game_data()
                     await asyncio.sleep(5)
                     await strategy.turn_screen_on_and_start_pogo()
