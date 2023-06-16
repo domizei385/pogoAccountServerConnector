@@ -316,6 +316,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.auth_password = self._pluginconfig.get(statusname, "auth_password", fallback=global_auth_password)
 
         self.__worker_strategy = dict()
+        self.__switching_workers: list[str] = list()
         self.__remaining_encounters: dict[str, int] = dict()
         self.__worker_encounter_check_interval_sec = self._pluginconfig.getint(statusname, "encounter_check_interval", fallback=30 * 60)
         self.__excluded_workers = [x.strip(' ') for x in self._pluginconfig.get(statusname, "excluded_workers", fallback='').split(",")]
@@ -360,51 +361,58 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
     async def _check_encounters(self):
         async with self._db_wrapper as session, session:
-            counters = await self._count_by_worker(session)
-            for worker, _ in counters.items():
+            encounters = await self._count_by_worker(session)
+            for worker, _ in encounters.items():
                 account_info = await self._get_account_info(worker)
                 if not account_info:
-                    return None
+                    continue
                 self._extract_remaining_encounters(worker, account_info)
 
-        ignored_workers: list[str] = list()
-
-        def done_callback(worker, task_start):
-            duration = time.time() - task_start
-            if duration > 30:
-                logger.info(f"Switching of {worker} finished after {int(duration)}s")
-            ignored_workers.remove(worker)
+        def switch_done_callback(worker, task_start):
+            with logger.contextualize(identifier=worker, name="worker"):
+                duration = time.time() - task_start
+                if duration > 30:
+                    logger.info(f"Switching of {worker} finished after {int(duration)}s")
+                if worker in self.__switching_workers:
+                    self.__switching_workers.remove(worker)
 
         while True:
-            async with self._db_wrapper as session, session:
-                counters = await self._count_by_worker(session)
-                loop = asyncio.get_running_loop()
+            try:
+                async with self._db_wrapper as session, session:
+                    encounters = await self._count_by_worker(session)
+                    logger.info(f"Running encounter limit job: {encounters}")
+                    loop = asyncio.get_running_loop()
 
-                for worker, count in counters.items():
-                    if not worker in self.__remaining_encounters or count < self.__remaining_encounters[worker]:
-                        continue
-                    if worker in ignored_workers:
-                        logger.info(f"Worker {worker} is just switching. Ignoring")
-                        continue
-                    with logger.contextualize(identifier=worker, name="worker"):
-                        if worker in self.__worker_strategy:
-                            if not worker in self.__excluded_workers:
-                                logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__remaining_encounters[worker]})")
-                                ignored_workers.append(worker)
-                                task = loop.create_task(self._switch_user_due_to_limit(worker))
-                                task_start = time.time()
-                                task.add_done_callback(lambda t: done_callback(worker, task_start))
+                    for worker, count in encounters.items():
+                        with logger.contextualize(identifier=worker, name="worker"):
+                            if not worker in self.__remaining_encounters or count < self.__remaining_encounters[worker]:
+                                continue
+                            if worker in self.__switching_workers:
+                                logger.info(f"Worker {worker} is just switching. Ignoring")
+                                continue
+                            if worker in self.__worker_strategy:
+                                if not worker in self.__excluded_workers:
+                                    logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__remaining_encounters[worker]})")
+                                    task = loop.create_task(self._switch_user_due_to_limit(worker))
+                                    self.__switching_workers.append(worker)
+                                    task_start = time.time()
+                                    task.add_done_callback(lambda t: switch_done_callback(worker, task_start))
+                                else:
+                                    logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
                             else:
-                                logger.info(f"Worker {worker} is excluded from encounter_limit based account switching")
-                        else:
-                            logger.warning(f"Unable to switch user on worker {worker} due to encounter_limit as strategy instance is missing")
+                                logger.warning(f"Unable to switch user on worker {worker} due to encounter_limit as strategy instance is missing")
 
+            except Exception as ex:
+                logger.exception(ex)
+            logger.info(f"Sleeping for {self.__worker_encounter_check_interval_sec} before next encounter limit check")
             await asyncio.sleep(self.__worker_encounter_check_interval_sec)
 
     async def _switch_user_due_to_limit(self, worker):
         try:
-            await self.__worker_strategy[worker]._switch_user('limit')
-        except Exception:
+            async with asyncio.timeout(30 * 60):
+                await self.__worker_strategy[worker]._switch_user('limit')
+        except Exception as ex:
+            logger.exception(ex)
             logger.opt(exception=True).error(f"Exception while switching user of {worker}")
 
     async def _count_by_worker(self, session: AsyncSession, worker: str = None) -> Any:
