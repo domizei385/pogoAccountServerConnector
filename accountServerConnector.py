@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 
+# TODO: track purpose through job as it may change e.g. quest -> iv
 class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
     """accountServerConnector plugin
     """
@@ -62,6 +63,9 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                     account_info = await self._request_account(origin, purpose=purpose, location=location_to_scan, reason='prelogin')
                     if not account_info:
                         return None
+                    stat_entries = await self._count_worker_stats(session, origin)
+                    if stat_entries > 0:
+                        logger.warning(f"Found {stat_entries} worker stat entries ")
                     self._extract_remaining_encounters(origin, account_info)
                     softban_info = self._extract_softban_info(account_info)
                     auth = SettingsPogoauth(username=account_info["username"], password=account_info["password"], level=account_info["level"],
@@ -463,17 +467,34 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             return self.__remaining_encounters[origin]
         return 99999999
 
+    async def _count_worker_stats(self, session: AsyncSession, worker: str) -> int:
+        try:
+            count = select(func.count('*')) \
+                .select_from(TrsStatsDetectWildMonRaw) \
+                .where(TrsStatsDetectWildMonRaw.worker == worker)
+            result = await session.execute(count)
+            count = result.scalar_one()
+            if count:
+                return int(count)
+        except Exception as ex:
+            logger.opt(exception=True).error(f"Exception while deleting worker stats: {ex}")
+        return 0
+
     async def _delete_worker_stats(self, session: AsyncSession, worker: str) -> None:
         try:
-            stmt = delete(TrsStatsDetectWildMonRaw) \
-                .where(TrsStatsDetectWildMonRaw.worker == worker)
-            await session.execute(stmt)
-            logger.debug(f"Deleted worker stats")
-            await session.commit()
+            count = await self._count_worker_stats(session, worker)
+            if count > 0:
+                delete_stmt = delete(TrsStatsDetectWildMonRaw) \
+                    .where(TrsStatsDetectWildMonRaw.worker == worker)
+                await session.execute(delete_stmt)
+                await session.commit()
+                logger.info(f"Deleted {count} worker stats")
+            else:
+                logger.debug("No worker stats to delete")
             if worker in self.__remaining_encounters:
                 del self.__remaining_encounters[worker]
-        except Exception:
-            logger.opt(exception=True).error("Exception while deleting worker stats")
+        except Exception as ex:
+            logger.opt(exception=True).error(f"Exception while deleting worker stats: {ex}")
 
     async def _available_accounts(self, origin: str, purpose: AccountPurpose = None):
         params = {'device': origin, 'region': self.region, 'purpose': purpose.value}
