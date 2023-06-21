@@ -319,9 +319,9 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
         self.auth_username = self._pluginconfig.get(statusname, "auth_username", fallback=global_auth_username)
         self.auth_password = self._pluginconfig.get(statusname, "auth_password", fallback=global_auth_password)
 
-        self.__worker_strategy = dict()
-        self.__switching_workers: list[str] = list()
-        self.__remaining_encounters: dict[str, int] = dict()
+        self.__worker_strategy = {}
+        self.__switching_workers: dict[str, int] = {}
+        self.__remaining_encounters: dict[str, int] = {}
         self.__worker_encounter_check_interval_sec = self._pluginconfig.getint(statusname, "encounter_check_interval", fallback=30 * 60)
         self.__excluded_workers = [x.strip(' ') for x in self._pluginconfig.get(statusname, "excluded_workers", fallback='').split(",")]
 
@@ -378,7 +378,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                 if duration > 30:
                     logger.info(f"Switching of {worker} finished after {int(duration)}s")
                 if worker in self.__switching_workers:
-                    self.__switching_workers.remove(worker)
+                    del self.__switching_workers[worker]
 
         while True:
             try:
@@ -392,13 +392,17 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
                             if not worker in self.__remaining_encounters or count < self.__remaining_encounters[worker]:
                                 continue
                             if worker in self.__switching_workers:
-                                logger.info(f"Worker {worker} is just switching. Ignoring")
-                                continue
+                                if self.__switching_workers[worker] < int(time.time()) - (15 * 60):
+                                    del self.__switching_workers[worker]
+                                else:
+                                    logger.info(f"Worker {worker} is just switching. Ignoring")
+                                    continue
                             if worker in self.__worker_strategy:
                                 if not worker in self.__excluded_workers:
                                     logger.warning(f"Switching worker {worker} as #encounters have reached {count} (> {self.__remaining_encounters[worker]})")
                                     task = loop.create_task(self._switch_user_due_to_limit(worker))
-                                    self.__switching_workers.append(worker)
+
+                                    self.__switching_workers[worker] = int(time.time())
                                     task_start = time.time()
                                     task.add_done_callback(lambda t: switch_done_callback(worker, task_start))
                                 else:
@@ -413,8 +417,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
     async def _switch_user_due_to_limit(self, worker):
         try:
-            async with asyncio.timeout(30 * 60):
-                await self.__worker_strategy[worker]._switch_user('limit')
+            await asyncio.wait_for(self.__worker_strategy[worker]._switch_user('limit'), timeout=10 * 60.0)
         except Exception as ex:
             logger.exception(ex)
             logger.opt(exception=True).error(f"Exception while switching user of {worker}")
