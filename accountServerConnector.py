@@ -240,11 +240,11 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
 
             old_check_ptc_login_ban = strategy._word_to_screen_matching.check_ptc_login_ban
 
-            async def new_check_ptc_login_ban():
+            async def new_check_ptc_login_ban(increment_count: bool = True) -> bool:
                 purpose = await self.mm.routemanager_get_purpose_of_device(worker_state.area_id)
                 # Suppress login attempt when no account is available
                 count = await self._available_accounts(worker_state.origin, purpose)
-                allow_login = count > 0 and await old_check_ptc_login_ban()
+                allow_login = count > 0 and await old_check_ptc_login_ban(increment_count)
                 if not allow_login:
                     logger.warning(f"Accounts available for {purpose}: {count > 0}. {'Allowing' if allow_login else 'Preventing'} PTC login.")
                 return allow_login
