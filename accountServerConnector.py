@@ -178,7 +178,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
     async def patch_mm_handle_login_request(self):
         old_ip_handle_login_request = self.mm.ip_handle_login_request
 
-        async def new_ip_handle_login_request(ip, origin, limit_seconds=None, limit_count=None):
+        async def new_ip_handle_login_request(ip, origin, limit_seconds=None, limit_count=None, increment_count: bool = True):
             account_info = await self._get_account_info(origin)
             if not account_info:
                 logger.info(f"ip_handle_login_request -> Skip IP tracking due to missing (known) assignment")
@@ -187,7 +187,7 @@ class accountServerConnector(mapadroid.plugins.pluginBase.Plugin):
             else:
                 logger.debug(f"ip_handle_login_request -> Regular login tracking")
                 self._extract_remaining_encounters(origin, account_info)
-                received_slot = await old_ip_handle_login_request(ip, origin, limit_seconds, limit_count)
+                received_slot = await old_ip_handle_login_request(ip, origin, limit_seconds, limit_count, increment_count)
                 if received_slot:
                     await self._track_login(origin)
 
